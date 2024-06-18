@@ -168,4 +168,7 @@ data/
 *.xls
 *.xlsx
 *.csv.gz
-*.png 
+*.png
+
+# Testing Files
+tests.ipynb
