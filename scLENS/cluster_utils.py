@@ -389,8 +389,7 @@ def generate_null_stats(X, params, on_genes, nPC):
     y = np.exp(y).T
     null[:, on_genes] = rng.poisson(y)
     
-    null = preprocess(null)
-    null_gm = reduce_dim(null, nPC)
+    null_gm = truncated_sclens(null, nPC)
     dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
     dist = np.square(dist)
     hc = Dendrogram(ward(dist))
@@ -405,8 +404,7 @@ def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
     if X_test.shape[0] < 2:
         return 1
 
-    X_clean = preprocess(X_test)
-    X_transform = reduce_dim(X_clean, nPC)
+    X_transform = truncated_sclens(X_clean, nPC)
 
     score = ward_linkage(X_transform, cluster_label)
 
@@ -417,8 +415,10 @@ def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
     params = fit_model(X_test, on_genes, nPC)
 
     pool = list()
-    for _ in range(10):
-        pool.append(generate_null_stats(X_test, params, on_genes, nPC))
+    parallel = Parallel(n_jobs=n_jobs)
+    pool.extend(parallel(delayed(generate_null_stats)(X_test, params, on_genes, nPC) for _ in range(10)))
+    # for _ in range(10):
+    #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
     
     mean = np.mean(pool)
     std = np.std(pool)
@@ -426,8 +426,9 @@ def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
     if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
         return pval
     
-    for _ in range(40):
-        pool.append(generate_null_stats(X_test, params, on_genes, nPC))
+    pool.extend(parallel(delayed(generate_null_stats)(X_test, params, on_genes, nPC) for _ in range(40)))
+    # for _ in range(40):
+    #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
     
     mean = np.mean(pool)
     std = np.std(pool)
@@ -450,7 +451,8 @@ def preprocess(X):
     X = np.transpose(X.T - np.mean(X, axis=1))
     return X
 
-def reduce_dim(X, nPC):
+def truncated_sclens(X, nPC):
+    X = preprocess(X)
     _, vecs = np.linalg.eigh(X @ X.T)
     vecs = np.flip(vecs, 1)
     vecs = vecs[:, :nPC]
