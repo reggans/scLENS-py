@@ -332,10 +332,9 @@ def calculate_ess(X):
    return np.sum(np.square(X - np.mean(X, )))
 
 def poisson_dispersion_stats(X):
-    n = np.sum(X, 1)
-    pis = np.sum(X, 0) / np.sum(X)
+    n = np.sum(X, 0)
+    pis = np.sum(X, 1) / np.sum(X)
     mu = pis.reshape(-1, 1) @ n.reshape(1, -1)
-    mu = mu.T
     y2 = (X - mu) ** 2 / mu
 
     disp = np.sum(y2, 0) / y2.shape[0]
@@ -367,7 +366,6 @@ def fit_model(X, on_genes, nPC):
     on_cov_sub = vecs[:, pos] @ np.sqrt(np.diag(vals[pos]))
     on_cov = on_cov_sub @ on_cov_sub.T
     np.fill_diagonal(on_cov, np.diag(rhos))
-    print('Making PD')
     on_cov_PD = nearestPD(on_cov)
     on_cov_sqrt = np.linalg.cholesky(on_cov_PD)
 
@@ -416,10 +414,8 @@ def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
     check_means = np.sum(X_test, 0)
     on_genes = np.nonzero(((norm.sf(phi_stat)) < 0.05) & (check_means != 0.0))[0]
 
-    print('Fitting model')
     params = fit_model(X_test, on_genes, nPC)
 
-    print('Generating null stats')
     pool = list()
     for _ in range(10):
         pool.append(generate_null_stats(X_test, params, on_genes, nPC))
@@ -430,7 +426,6 @@ def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
     if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
         return pval
     
-    print('Did not finish early')
     for _ in range(40):
         pool.append(generate_null_stats(X_test, params, on_genes, nPC))
     

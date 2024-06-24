@@ -252,7 +252,7 @@ def scSHC(X,
 
         alpha_level = alpha * ((len(test_leaves) - 1) / (X.shape[0] - 1))
         sig = test_significance(X, test_leaves, nPC, score, alpha_level, n_jobs)
-        print(f'ClusterID: {test}, Num tests: {len(test_leaves)}, Significance: {sig}')
+        print(f'ClusterID: {test}, Num tests: {len(test_leaves)}, Significance: {sig}, Total clusters: {cluster_idx}')
 
         if (sig < alpha_level):
             test_queue.extend(dend.get_children(test))
