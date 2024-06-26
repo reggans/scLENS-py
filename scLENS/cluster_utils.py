@@ -404,7 +404,7 @@ def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
     if X_test.shape[0] < 2:
         return 1
 
-    X_transform = truncated_sclens(X_clean, nPC)
+    X_transform = truncated_sclens(X_test, nPC)
 
     score = ward_linkage(X_transform, cluster_label)
 
