@@ -329,12 +329,13 @@ def ward_linkage(X, labels):
     return (ess - (ess1 + ess2)) / X.shape[0]
 
 def calculate_ess(X):
-   return np.sum(np.square(X - np.mean(X, )))
+    return np.sum(np.sum(np.square(X - np.mean(X, 1).reshape(-1, 1)), 0))
 
 def poisson_dispersion_stats(X):
-    n = np.sum(X, 0)
-    pis = np.sum(X, 1) / np.sum(X)
+    n = np.sum(X, 1)
+    pis = np.sum(X, 0) / np.sum(X)
     mu = pis.reshape(-1, 1) @ n.reshape(1, -1)
+    mu = mu.T
     y2 = (X - mu) ** 2 / mu
 
     disp = np.sum(y2, 0) / y2.shape[0]
@@ -371,7 +372,7 @@ def fit_model(X, on_genes, nPC):
 
     return np.mean(X, 0), mus, on_cov_sqrt 
 
-def generate_null_stats(X, params, on_genes, nPC):
+def generate_null_stats(X, params, on_genes, nPC, reduce_method):
     lambdas = params[0].astype(np.float64)
     on_means = params[1].astype(np.float64)
     on_cov_sqrt = params[2].astype(np.float64)
@@ -389,7 +390,13 @@ def generate_null_stats(X, params, on_genes, nPC):
     y = np.exp(y).T
     null[:, on_genes] = rng.poisson(y)
     
-    null_gm = truncated_sclens(null, nPC)
+    if reduce_method == 'sclens':
+        null_gm = truncated_sclens(null, nPC)
+    elif reduce_method == 'poisson':
+        null_gm = reduce_dim(null, nPC)
+    else:
+        raise Exception("Invalid dimension reduce method")
+
     dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
     dist = np.square(dist)
     hc = Dendrogram(ward(dist))
@@ -397,42 +404,42 @@ def generate_null_stats(X, params, on_genes, nPC):
     qual = ward_linkage(null_gm, leaves[:, 1])
     return qual
 
-def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
-    idx = leaves[:, 0]
-    cluster_label = leaves[:, 1]
-    X_test = np.array(X)[idx]
-    if X_test.shape[0] < 2:
+def test_significance(X, labels, nPC, score, alpha_level, reduce_method='sclens', n_jobs=None):
+    if X.shape[0] < 2:
         return 1
 
-    X_transform = truncated_sclens(X_clean, nPC)
+    if reduce_method == 'sclens':
+        X_transform = truncated_sclens(X, nPC)
+    elif reduce_method == 'poisson':
+        X_transform = reduce_dim(X, nPC)
+    else:
+        raise Exception("Invalid dimension reduce method")
 
-    score = ward_linkage(X_transform, cluster_label)
+    score = ward_linkage(X_transform, labels)
 
-    phi_stat = poisson_dispersion_stats(X_test)
-    check_means = np.sum(X_test, 0)
+    phi_stat = poisson_dispersion_stats(X)
+    check_means = np.sum(X, 0)
     on_genes = np.nonzero(((norm.sf(phi_stat)) < 0.05) & (check_means != 0.0))[0]
 
-    params = fit_model(X_test, on_genes, nPC)
+    params = fit_model(X, on_genes, nPC)
 
     pool = list()
     parallel = Parallel(n_jobs=n_jobs)
-    pool.extend(parallel(delayed(generate_null_stats)(X_test, params, on_genes, nPC) for _ in range(10)))
-    # for _ in range(10):
-    #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
+    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC, reduce_method) for _ in range(10)))
     
     mean = np.mean(pool)
     std = np.std(pool)
     pval = norm.sf(score, loc=mean, scale=std)
     if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
+        print('Mean:', mean, 'Std:', std, 'Score:', score)
         return pval
     
-    pool.extend(parallel(delayed(generate_null_stats)(X_test, params, on_genes, nPC) for _ in range(40)))
-    # for _ in range(40):
-    #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
+    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC, reduce_method) for _ in range(40)))
     
     mean = np.mean(pool)
     std = np.std(pool)
     pval = norm.sf(score, loc=mean, scale=std)
+    print('Mean:', mean, 'Std:', std, 'Score:', score)
     return pval
 
 def preprocess(X):
@@ -456,4 +463,28 @@ def truncated_sclens(X, nPC):
     _, vecs = np.linalg.eigh(X @ X.T)
     vecs = np.flip(vecs, 1)
     vecs = vecs[:, :nPC]
-    return X @ X.T @ vecs
+    return X @ X.T @ vecs   
+
+def poisson_dev(X):
+    n = np.sum(X, 1)
+    pis = np.sum(X, 0) / np.sum(X)
+    mu = pis.reshape(-1, 1) @ n.reshape(1, -1)
+    mu = mu.T
+    # print(np.nonzero(np.logical_or(X == 0, mu == 0)))
+    # print(np.nonzero(mu == 0))
+    # idx = np.logical_and(X != 0, mu != 0)
+    # print(X[idx] / mu[idx])
+    print(X.shape, mu.shape)
+    d = 2 * (X * np.log(np.where(X != 0, X / mu, 1)) - (X - mu))
+    d[d < 0] = 0
+
+    return np.sqrt(d) * np.where(X > mu, 1, -1)
+
+def reduce_dim(X, nPC):
+    X = poisson_dev(X)
+    X = X - np.mean(X, axis=1).reshape(-1, 1)
+    X = X.T
+    _, vecs = np.linalg.eigh(X @ X.T)
+    vecs = np.flip(vecs, 1)
+    vecs = vecs[:, :nPC]
+    return (vecs.T @ X).T
