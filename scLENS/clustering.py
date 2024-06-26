@@ -238,7 +238,7 @@ def scSHC(X,
 
     nPC = X_transform.shape[1]
     dist = scipy.spatial.distance.pdist(X_transform, 'cosine')
-    dist = np.square(dist)
+    dist = np.sqrt(dist)
     dend = Dendrogram(ward(dist))
     test_queue = [dend.root]
     clustering = np.zeros(X.shape[0]) - 1 # -1 for unassigned cluster

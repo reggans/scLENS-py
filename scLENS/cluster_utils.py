@@ -329,7 +329,7 @@ def ward_linkage(X, labels):
     return (ess - (ess1 + ess2)) / X.shape[0]
 
 def calculate_ess(X):
-   return np.sum(np.square(X - np.mean(X, )))
+   return np.sum(np.square(X - np.mean(X, 0)))
 
 def poisson_dispersion_stats(X):
     n = np.sum(X, 0)
@@ -348,7 +348,7 @@ def fit_model(X, on_genes, nPC):
     means = np.mean(on_counts, 0)
     
     sigmas = np.log(((np.diag(cov) - means) / means**2) + 1)
-    sigmas[np.isnan(sigmas)] = -10
+    # sigmas[np.isnan(sigmas)] = -10
     mus = np.log(means) - 0.5 * sigmas
     mus_sum = mus.reshape(-1, 1) @ np.ones((1, mus.shape[0])) + np.ones((mus.shape[0], 1)) @ mus.reshape(1, -1)
     sigmas_sum = sigmas.reshape(-1, 1) @ np.ones((1, sigmas.shape[0])) + np.ones((sigmas.shape[0], 1)) @ sigmas.reshape(1, -1)
@@ -385,13 +385,14 @@ def generate_null_stats(X, params, on_genes, nPC):
 
     rng = np.random.default_rng()
     null[:, rev_idx] = rng.poisson(lambdas[rev_idx], (num_gen, np.sum(rev_idx)))
+
     y = on_cov_sqrt @ rng.normal(size=(num_gen, int(np.sum(idx)))).reshape(int(np.sum(idx)), num_gen) + on_means.reshape(-1, 1)
     y = np.exp(y).T
     null[:, on_genes] = rng.poisson(y)
     
     null_gm = truncated_sclens(null, nPC)
     dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
-    dist = np.square(dist)
+    dist = np.sqrt(dist)
     hc = Dendrogram(ward(dist))
     leaves = np.array(hc.get_subtree_leaves(hc.root))
     qual = ward_linkage(null_gm, leaves[:, 1])
