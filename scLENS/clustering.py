@@ -251,6 +251,13 @@ def scSHC(X,
         score = dend.get_score(test)
 
         alpha_level = alpha * ((len(test_leaves) - 1) / (X.shape[0] - 1))
+
+        X_test = X[test_leaves[:, 0]]
+        label_test = test_leaves[:, 1]
+        to_keep = np.sum(X_test, axis=0) > 20
+        X_test = X_test[:, to_keep]
+
+
         sig = test_significance(X, test_leaves, nPC, score, alpha_level, n_jobs)
 
         if (sig < alpha_level):
