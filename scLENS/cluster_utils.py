@@ -329,26 +329,27 @@ def ward_linkage(X, labels):
     return (ess - (ess1 + ess2)) / X.shape[0]
 
 def calculate_ess(X):
-   return np.sum(np.square(X - np.mean(X, 0)))
+   return np.sqrt(np.sum(np.square(X - np.mean(X))))
 
 def poisson_dispersion_stats(X):
-    n = np.sum(X, 0)
-    pis = np.sum(X, 1) / np.sum(X)
+    n = np.sum(X, 1)
+    pis = np.sum(X, 0) / np.sum(X)
+    print(np.any(n == 0), np.any(pis == 0))
     mu = pis.reshape(-1, 1) @ n.reshape(1, -1)
+    mu = mu.T
     y2 = (X - mu) ** 2 / mu
 
     disp = np.sum(y2, 0) / y2.shape[0]
 
     return np.sqrt(y2.shape[0]) * (disp - 1) / np.sqrt(np.var(y2, 0))
 
-def fit_model(X, on_genes, nPC):
+def fit_model(X, on_genes):
     on_counts = X[:, on_genes]
     cov = np.cov(on_counts.T)
     cov = np.atleast_2d(cov)
     means = np.mean(on_counts, 0)
     
     sigmas = np.log(((np.diag(cov) - means) / means**2) + 1)
-    # sigmas[np.isnan(sigmas)] = -10
     mus = np.log(means) - 0.5 * sigmas
     mus_sum = mus.reshape(-1, 1) @ np.ones((1, mus.shape[0])) + np.ones((mus.shape[0], 1)) @ mus.reshape(1, -1)
     sigmas_sum = sigmas.reshape(-1, 1) @ np.ones((1, sigmas.shape[0])) + np.ones((sigmas.shape[0], 1)) @ sigmas.reshape(1, -1)
@@ -359,8 +360,8 @@ def fit_model(X, on_genes, nPC):
     np.fill_diagonal(rhos, sigmas)
 
     vals, vecs = np.linalg.eigh(rhos)
-    vals = np.flip(vals)[:nPC]
-    vecs = np.flip(vecs, 1)[:, :nPC]
+    # vals = np.flip(vals)
+    # vecs = np.flip(vecs, 1)
     pos = vals > 0
 
     on_cov_sub = vecs[:, pos] @ np.sqrt(np.diag(vals[pos]))
@@ -379,16 +380,15 @@ def generate_null_stats(X, params, on_genes, nPC):
     num_gen = min(X.shape[0], 1000)
     null = np.zeros((num_gen, X.shape[1]))
 
-    idx = np.zeros(X.shape[1])
+    idx = np.zeros(X.shape[1], dtype=bool)
     idx[on_genes] = True
-    rev_idx = idx == 0
 
     rng = np.random.default_rng()
-    null[:, rev_idx] = rng.poisson(lambdas[rev_idx], (num_gen, np.sum(rev_idx)))
+    null[:, np.logical_not(idx)] = rng.poisson(lambdas[np.logical_not(idx)], (num_gen, np.sum(np.logical_not(idx))))
 
     y = on_cov_sqrt @ rng.normal(size=(num_gen, int(np.sum(idx)))).reshape(int(np.sum(idx)), num_gen) + on_means.reshape(-1, 1)
     y = np.exp(y).T
-    null[:, on_genes] = rng.poisson(y)
+    null[:, idx] = rng.poisson(y)
     
     null_gm = truncated_sclens(null, nPC)
     dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
@@ -398,42 +398,53 @@ def generate_null_stats(X, params, on_genes, nPC):
     qual = ward_linkage(null_gm, leaves[:, 1])
     return qual
 
-def test_significance(X, leaves, nPC, score, alpha_level, n_jobs=None):
-    idx = leaves[:, 0]
-    cluster_label = leaves[:, 1]
-    X_test = np.array(X)[idx]
-    if X_test.shape[0] < 2:
+def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
+    print(np.any(np.sum(X, 0) == 0))
+    # normal_genes = np.where((np.sum(X, axis=0) > 0) &
+    #                         (np.count_nonzero(X, axis=0) >= 200))[0]
+    # normal_cells = np.where((np.sum(X, axis=1) > 0) &
+    #                         (np.count_nonzero(X, axis=1) >= 15))[0]
+    # X = X[normal_cells][:, normal_genes]
+
+    # if X.shape[0] < 2 or X.shape[1] == 0:
+    #     return 1  
+
+    if X.shape[0] < 2:
         return 1
+    
+    X_transform = truncated_sclens(X, nPC)
 
-    X_transform = truncated_sclens(X_test, nPC)
+    score = ward_linkage(X_transform, labels)
 
-    score = ward_linkage(X_transform, cluster_label)
-
-    phi_stat = poisson_dispersion_stats(X_test)
-    check_means = np.sum(X_test, 0)
+    phi_stat = poisson_dispersion_stats(X)
+    check_means = np.sum(X, 0)
     on_genes = np.nonzero(((norm.sf(phi_stat)) < 0.05) & (check_means != 0.0))[0]
 
-    params = fit_model(X_test, on_genes, nPC)
+    params = fit_model(X, on_genes)
 
     pool = list()
     parallel = Parallel(n_jobs=n_jobs)
-    pool.extend(parallel(delayed(generate_null_stats)(X_test, params, on_genes, nPC) for _ in range(10)))
+    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC) for _ in range(10)))
     # for _ in range(10):
     #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
     
-    mean = np.mean(pool)
-    std = np.std(pool)
+    # mean = np.mean(pool)
+    # std = np.std(pool)
+    mean, std = norm.fit(pool)
     pval = norm.sf(score, loc=mean, scale=std)
     if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
+        print('Mean:', mean, 'Std:', std, 'Score:', score)
         return pval
     
-    pool.extend(parallel(delayed(generate_null_stats)(X_test, params, on_genes, nPC) for _ in range(40)))
+    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC) for _ in range(40)))
     # for _ in range(40):
     #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
     
-    mean = np.mean(pool)
-    std = np.std(pool)
+    # mean = np.mean(pool)
+    # std = np.std(pool)
+    mean, std = norm.fit(pool)
     pval = norm.sf(score, loc=mean, scale=std)
+    print('Mean:', mean, 'Std:', std, 'Score:', score)
     return pval
 
 def preprocess(X):
@@ -444,6 +455,8 @@ def preprocess(X):
     # Z-score normalization
     mean = np.mean(X, axis=0)
     std = np.std(X, axis=0)
+    # print(X[:, std == 0])
+    # print(X.shape)
     X = (X - mean) / (std + 1e-12)
 
     # L2 normalization
@@ -454,7 +467,6 @@ def preprocess(X):
 
 def truncated_sclens(X, nPC):
     X = preprocess(X)
-    _, vecs = np.linalg.eigh(X @ X.T)
-    vecs = np.flip(vecs, 1)
-    vecs = vecs[:, :nPC]
+    _, vecs = np.linalg.eigh(X @ X.T / X.shape[1])
+    vecs = vecs[:, -nPC:]
     return X @ X.T @ vecs

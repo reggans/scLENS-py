@@ -254,16 +254,16 @@ def scSHC(X,
 
         X_test = X[test_leaves[:, 0]]
         label_test = test_leaves[:, 1]
-        to_keep = np.sum(X_test, axis=0) > 20
+        to_keep = np.sum(X_test, axis=0) > 0
         X_test = X_test[:, to_keep]
 
-
-        sig = test_significance(X, test_leaves, nPC, score, alpha_level, n_jobs)
+        if X_test.shape[1] == 0:
+            sig = 1
+        else:
+            sig = test_significance(X_test, label_test, nPC, score, alpha_level, n_jobs)
 
         if (sig < alpha_level):
             test_queue.extend(dend.get_children(test))
-
-            # Calculate q-FWER????
         else:
             test_idx = [x for (x, _) in test_leaves]
             clustering[test_idx] = cluster_idx
