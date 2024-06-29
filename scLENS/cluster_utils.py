@@ -334,7 +334,6 @@ def calculate_ess(X):
 def poisson_dispersion_stats(X):
     n = np.sum(X, 1)
     pis = np.sum(X, 0) / np.sum(X)
-    print(np.any(n == 0), np.any(pis == 0))
     mu = pis.reshape(-1, 1) @ n.reshape(1, -1)
     mu = mu.T
     y2 = (X - mu) ** 2 / mu
@@ -360,8 +359,6 @@ def fit_model(X, on_genes):
     np.fill_diagonal(rhos, sigmas)
 
     vals, vecs = np.linalg.eigh(rhos)
-    # vals = np.flip(vals)
-    # vecs = np.flip(vecs, 1)
     pos = vals > 0
 
     on_cov_sub = vecs[:, pos] @ np.sqrt(np.diag(vals[pos]))
@@ -399,16 +396,6 @@ def generate_null_stats(X, params, on_genes, nPC):
     return qual
 
 def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
-    print(np.any(np.sum(X, 0) == 0))
-    # normal_genes = np.where((np.sum(X, axis=0) > 0) &
-    #                         (np.count_nonzero(X, axis=0) >= 200))[0]
-    # normal_cells = np.where((np.sum(X, axis=1) > 0) &
-    #                         (np.count_nonzero(X, axis=1) >= 15))[0]
-    # X = X[normal_cells][:, normal_genes]
-
-    # if X.shape[0] < 2 or X.shape[1] == 0:
-    #     return 1  
-
     if X.shape[0] < 2:
         return 1
     
@@ -425,11 +412,7 @@ def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
     pool = list()
     parallel = Parallel(n_jobs=n_jobs)
     pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC) for _ in range(10)))
-    # for _ in range(10):
-    #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
     
-    # mean = np.mean(pool)
-    # std = np.std(pool)
     mean, std = norm.fit(pool)
     pval = norm.sf(score, loc=mean, scale=std)
     if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
@@ -437,11 +420,7 @@ def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
         return pval
     
     pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC) for _ in range(40)))
-    # for _ in range(40):
-    #     pool.append(generate_null_stats(X_test, params, on_genes, nPC))
     
-    # mean = np.mean(pool)
-    # std = np.std(pool)
     mean, std = norm.fit(pool)
     pval = norm.sf(score, loc=mean, scale=std)
     print('Mean:', mean, 'Std:', std, 'Score:', score)
@@ -455,8 +434,6 @@ def preprocess(X):
     # Z-score normalization
     mean = np.mean(X, axis=0)
     std = np.std(X, axis=0)
-    # print(X[:, std == 0])
-    # print(X.shape)
     X = (X - mean) / (std + 1e-12)
 
     # L2 normalization
