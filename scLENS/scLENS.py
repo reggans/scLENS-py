@@ -399,9 +399,7 @@ class scLENS():
         """"""
         from .cluster_utils import find_clusters
 
-        # X_clean = self.preprocess(X, precomputed=True)
         X_transform = self.transform(X)
-        # X_clean = X_clean.cpu().numpy()
 
         if res is not None:
             self.resolution = res

@@ -5,8 +5,9 @@ import scipy
 import igraph as ig
 import leidenalg as la
 from sklearn.neighbors import kneighbors_graph
+from sklearn.metrics.pairwise import cosine_similarity
 from scipy.stats import norm
-from fastcluster import ward
+from scipy.cluster.hierarchy import linkage
 
 from numba import cuda
 from joblib import Parallel, delayed, wrap_non_picklable_objects
@@ -308,6 +309,8 @@ class Dendrogram():
         leaves.extend([(x, 1) for (x, _) in self.get_subtree_leaves(right)])
         self.cache[idx] = leaves.copy()
 
+        assert len(leaves) == self.linkage[idx][3] # Sanity check
+
         return leaves
     
     def get_children(self, root):
@@ -320,7 +323,7 @@ class Dendrogram():
         if root < self.n_samples:
             return 0
         idx = root - self.n_samples
-        return self.linkage[idx][2]
+        return self.linkage[idx][2] 
 
 def ward_linkage(X, labels):
     ess1 = calculate_ess(X[labels==0])
@@ -329,43 +332,46 @@ def ward_linkage(X, labels):
     return (ess - (ess1 + ess2)) / X.shape[0]
 
 def calculate_ess(X):
-   return np.sqrt(np.sum(np.square(X - np.mean(X))))
+    return np.sum(1 - cosine_similarity(X, np.mean(X, 0).reshape(1, -1)))
 
 def poisson_dispersion_stats(X):
     n = np.sum(X, 1)
     pis = np.sum(X, 0) / np.sum(X)
     mu = pis.reshape(-1, 1) @ n.reshape(1, -1)
     mu = mu.T
-    y2 = (X - mu) ** 2 / mu
+    y2 = np.square(X - mu) / mu
 
     disp = np.sum(y2, 0) / y2.shape[0]
 
     return np.sqrt(y2.shape[0]) * (disp - 1) / np.sqrt(np.var(y2, 0))
 
-def fit_model(X, on_genes):
-    on_counts = X[:, on_genes]
-    cov = np.cov(on_counts.T)
+def fit_model(X, on_genes, nPC):
+    on_counts = X[:, on_genes] # c x g
+    cov = np.cov(on_counts.T) # g x g
     cov = np.atleast_2d(cov)
-    means = np.mean(on_counts, 0)
+    means = np.mean(on_counts, 0) # g
     
-    sigmas = np.log(((np.diag(cov) - means) / means**2) + 1)
-    mus = np.log(means) - 0.5 * sigmas
-    mus_sum = mus.reshape(-1, 1) @ np.ones((1, mus.shape[0])) + np.ones((mus.shape[0], 1)) @ mus.reshape(1, -1)
-    sigmas_sum = sigmas.reshape(-1, 1) @ np.ones((1, sigmas.shape[0])) + np.ones((sigmas.shape[0], 1)) @ sigmas.reshape(1, -1)
+    sigmas = np.log(((np.diag(cov) - means) / means**2) + 1) # g
+    mus = np.log(means) - 0.5 * sigmas # g
+    mus_sum = mus.reshape(-1, 1) @ np.ones((1, mus.shape[0])) + np.ones((mus.shape[0], 1)) @ mus.reshape(1, -1) # g x g
+    sigmas_sum = sigmas.reshape(-1, 1) @ np.ones((1, sigmas.shape[0])) + np.ones((sigmas.shape[0], 1)) @ sigmas.reshape(1, -1) # g x g
     with np.errstate(divide='ignore', invalid='ignore'):
-        rhos = np.log(cov / np.exp(mus_sum + 0.5 * sigmas_sum) + 1)
+        rhos = np.log(cov / np.exp(mus_sum + 0.5 * sigmas_sum) + 1) # g x g
     rhos[np.isnan(rhos)] = -10
     rhos[np.isinf(rhos)] = -10
     np.fill_diagonal(rhos, sigmas)
 
     vals, vecs = np.linalg.eigh(rhos)
+    nPC = min(nPC, vals.shape[0])
+    vals = vals[-nPC:]
+    vecs = vecs[:, -nPC:]
     pos = vals > 0
 
     on_cov_sub = vecs[:, pos] @ np.sqrt(np.diag(vals[pos]))
     on_cov = on_cov_sub @ on_cov_sub.T
     np.fill_diagonal(on_cov, np.diag(rhos))
     on_cov_PD = nearestPD(on_cov)
-    on_cov_sqrt = np.linalg.cholesky(on_cov_PD)
+    on_cov_sqrt = scipy.linalg.cholesky(on_cov_PD).T
 
     return np.mean(X, 0), mus, on_cov_sqrt 
 
@@ -387,27 +393,26 @@ def generate_null_stats(X, params, on_genes, nPC):
     y = np.exp(y).T
     null[:, idx] = rng.poisson(y)
     
+    null = null[np.sum(null, 1) > 0][:, np.sum(null, 0) > 0]
     null_gm = truncated_sclens(null, nPC)
     dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
-    dist = np.sqrt(dist)
-    hc = Dendrogram(ward(dist))
-    leaves = np.array(hc.get_subtree_leaves(hc.root))
-    qual = ward_linkage(null_gm, leaves[:, 1])
+    hc = Dendrogram(linkage(dist, method='ward'))
+    qual = hc.get_score(hc.root)
     return qual
 
 def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
     if X.shape[0] < 2:
         return 1
     
+    nPC = min(nPC, X.shape[1])
+    
     X_transform = truncated_sclens(X, nPC)
-
-    score = ward_linkage(X_transform, labels)
 
     phi_stat = poisson_dispersion_stats(X)
     check_means = np.sum(X, 0)
     on_genes = np.nonzero(((norm.sf(phi_stat)) < 0.05) & (check_means != 0.0))[0]
 
-    params = fit_model(X, on_genes)
+    params = fit_model(X, on_genes, nPC)
 
     pool = list()
     parallel = Parallel(n_jobs=n_jobs)
@@ -434,7 +439,7 @@ def preprocess(X):
     # Z-score normalization
     mean = np.mean(X, axis=0)
     std = np.std(X, axis=0)
-    X = (X - mean) / (std + 1e-12)
+    X = (X - mean) / std
 
     # L2 normalization
     l2_norm = np.linalg.norm(X, ord=2, axis=1)

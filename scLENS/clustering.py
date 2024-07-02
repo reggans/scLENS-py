@@ -1,11 +1,19 @@
 import numpy as np
 import pandas as pd
 import scipy
-
-from .cluster_utils import find_clusters, construct_sample_clusters, calculate_score
+from scipy.cluster.hierarchy import linkage
+from sklearn.metrics import silhouette_samples
+from resample.bootstrap import confidence_interval
+from joblib import Parallel
 
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
+from tqdm_joblib import tqdm_joblib
+
+from .cluster_utils import find_clusters, construct_sample_clusters, calculate_score, \
+    group_silhouette, calculate_one_minus_rpac, Dendrogram, test_significance
+
+from collections import Counter
 
 def chooseR(X,
             reps=100,
@@ -40,10 +48,6 @@ def chooseR(X,
     float
         The chosen best resolution
     """
-    from sklearn.metrics import silhouette_samples
-    from resample.bootstrap import confidence_interval
-    from .cluster_utils import group_silhouette
-
     if resolutions is None:
         resolutions = [0.3, 0.5, 0.8, 1, 1.2, 1.6, 2, 4, 6, 8]
     resolutions = set(resolutions)
@@ -127,11 +131,6 @@ def multiK(X,
     float
         The chosen best resolution
     """
-    from joblib import Parallel
-    from tqdm_joblib import tqdm_joblib
-    from collections import Counter
-    from .cluster_utils import calculate_one_minus_rpac
-
     if resolutions is None:
         resolutions = np.arange(0.05, 2, 0.05)
     else:
@@ -233,31 +232,30 @@ def scSHC(X,
     Journal of Statistical Software, 53 (2013), no. 9, 1-18,
     https://doi.org/10.18637/jss.v053.i09.
     """
-    from fastcluster import ward
-    from .cluster_utils import Dendrogram, test_significance
-
     nPC = X_transform.shape[1]
     dist = scipy.spatial.distance.pdist(X_transform, 'cosine')
-    dist = np.sqrt(dist)
-    dend = Dendrogram(ward(dist))
+    dend = Dendrogram(linkage(dist, method='ward'))
     test_queue = [dend.root]
     clustering = np.zeros(X.shape[0]) - 1 # -1 for unassigned cluster
     cluster_idx = 0
 
     while(test_queue):
         test = test_queue.pop()
-        test_leaves = sorted(dend.get_subtree_leaves(test), key=lambda x: x[0])
-        test_leaves = np.array(test_leaves)
-        score = dend.get_score(test)
+        test_leaves = np.array(dend.get_subtree_leaves(test))
+        score = dend.get_score(test) ** 2
 
-        alpha_level = alpha * ((len(test_leaves) - 1) / (X.shape[0] - 1))
+        alpha_level = alpha * ((test_leaves.shape[0] - 1) / (X.shape[0] - 1))
 
         X_test = X[test_leaves[:, 0]]
         label_test = test_leaves[:, 1]
-        to_keep = np.sum(X_test, axis=0) > 0
-        X_test = X_test[:, to_keep]
+        X_test = X_test[:, np.sum(X_test, 0) > 0]
 
-        if X_test.shape[1] == 0:
+        n_cluster1 = np.sum(label_test)
+        n_cluster0 = len(label_test) - n_cluster1
+
+        print(f'ClusterID: {test}, Test Shape: {X_test.shape}')
+        
+        if min(n_cluster1, n_cluster0) < 20:
             sig = 1
         else:
             sig = test_significance(X_test, label_test, nPC, score, alpha_level, n_jobs)
@@ -268,7 +266,7 @@ def scSHC(X,
             test_idx = [x for (x, _) in test_leaves]
             clustering[test_idx] = cluster_idx
             cluster_idx += 1
-        
-        print(f'ClusterID: {test}, Num tests: {len(test_leaves)}, Significance: {sig}, Total clusters: {cluster_idx}')
+
+            print(f'CLUSTER IDENTIFIED; Significance: {sig}, Total clusters: {cluster_idx}')
     
     return clustering
