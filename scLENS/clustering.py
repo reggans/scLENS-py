@@ -242,7 +242,7 @@ def scSHC(X,
     while(test_queue):
         test = test_queue.pop()
         test_leaves = np.array(dend.get_subtree_leaves(test))
-        score = dend.get_score(test) ** 2
+        score = dend.get_score(test)
 
         alpha_level = alpha * ((test_leaves.shape[0] - 1) / (X.shape[0] - 1))
 

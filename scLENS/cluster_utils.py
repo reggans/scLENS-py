@@ -5,7 +5,7 @@ import scipy
 import igraph as ig
 import leidenalg as la
 from sklearn.neighbors import kneighbors_graph
-from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.metrics.pairwise import cosine_distances
 from scipy.stats import norm
 from scipy.cluster.hierarchy import linkage
 
@@ -326,13 +326,19 @@ class Dendrogram():
         return self.linkage[idx][2] 
 
 def ward_linkage(X, labels):
-    ess1 = calculate_ess(X[labels==0])
-    ess2 = calculate_ess(X[labels==1])
-    ess = calculate_ess(X)
-    return (ess - (ess1 + ess2)) / X.shape[0]
+    # ess1 = calculate_ess(X[labels==0])
+    # ess2 = calculate_ess(X[labels==1])
+    # ess = calculate_ess(X)
+    # return (ess - (ess1 + ess2)) / X.shape[0]
+    n1 = np.sum(labels == 0)
+    n2 = np.sum(labels == 1)
+    mean1 = np.mean(X[labels==0], 0)
+    mean2 = np.mean(X[labels==1], 0)
+    dist = cosine_distances(mean1.reshape(1, -1), mean2.reshape(1, -1)).item()
+    return np.sqrt(2 * n1 * n2 / (n1 + n2)) * dist
 
 def calculate_ess(X):
-    return np.sum(1 - cosine_similarity(X, np.mean(X, 0).reshape(1, -1)))
+    return np.sum(cosine_distances(X, np.mean(X, 0).reshape(1, -1)))
 
 def poisson_dispersion_stats(X):
     n = np.sum(X, 1)
@@ -397,7 +403,11 @@ def generate_null_stats(X, params, on_genes, nPC):
     null_gm = truncated_sclens(null, nPC)
     dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
     hc = Dendrogram(linkage(dist, method='ward'))
-    qual = hc.get_score(hc.root)
+    # qual = hc.get_score(hc.root)
+    leaves = np.array(hc.get_subtree_leaves(hc.root))
+    leaf_idx = leaves[:, 0]
+    leaf_labels = leaves[:, 1]
+    qual = ward_linkage(null_gm[leaf_idx], leaf_labels)
     return qual
 
 def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
@@ -407,6 +417,8 @@ def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
     nPC = min(nPC, X.shape[1])
     
     X_transform = truncated_sclens(X, nPC)
+
+    score = ward_linkage(X_transform, labels)
 
     phi_stat = poisson_dispersion_stats(X)
     check_means = np.sum(X, 0)
