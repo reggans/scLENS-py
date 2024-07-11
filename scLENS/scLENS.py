@@ -82,10 +82,14 @@ class scLENS():
                 normal_cells = np.where((np.sum(data.values, axis=1) > self.min_tp) &
                                 (np.count_nonzero(data.values, axis=1) >= self.min_genes_per_cell))[0]
                 X_clean = data.iloc[normal_cells, self.normal_genes].values
+
+                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
             else:
                 normal_cells = np.where((np.sum(data, axis=1) > self.min_tp) &
                                 (np.count_nonzero(data, axis=1) >= self.min_genes_per_cell))[0]
                 X_clean = data[normal_cells, self.normal_genes]
+
+                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
             X_clean = torch.tensor(X_clean, device=self.device, dtype=torch.double)
             X_clean = torch.transpose(torch.transpose(X_clean, 0, 1) / self.l1_norm, 0, 1)
@@ -116,6 +120,8 @@ class scLENS():
             self.min_genes_per_cell = min_genes_per_cell
             
             self._raw = data.iloc[self.normal_cells, self.normal_genes]
+
+            print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         else:
             self.normal_genes = np.where((np.sum(data, axis=0) > min_tp) &
                                     (np.count_nonzero(data, axis=0) >= min_cells_per_gene))[0]
@@ -123,6 +129,8 @@ class scLENS():
                                     (np.count_nonzero(data, axis=1) >= min_genes_per_cell))[0]
             
             self._raw = pd.DataFrame(data[self.normal_cells][:, self.normal_genes])
+            
+            print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         
         X = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
         
