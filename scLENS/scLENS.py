@@ -121,7 +121,7 @@ class scLENS():
             
             self._raw = data.iloc[self.normal_cells, self.normal_genes]
 
-            print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+            print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         else:
             self.normal_genes = np.where((np.sum(data, axis=0) > min_tp) &
                                     (np.count_nonzero(data, axis=0) >= min_cells_per_gene))[0]
@@ -130,7 +130,7 @@ class scLENS():
             
             self._raw = pd.DataFrame(data[self.normal_cells][:, self.normal_genes])
 
-            print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+            print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         
         X = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
         

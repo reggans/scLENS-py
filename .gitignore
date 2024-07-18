@@ -173,3 +173,11 @@ data/
 # Testing Files
 tests.ipynb
 score_data.ipynb
+
+# Random
+Figures/
+*.ai 
+.vscode/
+
+# R
+.Rhistory
