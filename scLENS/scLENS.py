@@ -84,10 +84,14 @@ class scLENS():
                 X_clean = data.iloc[normal_cells, self.normal_genes].values
 
                 print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+
+                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
             else:
                 normal_cells = np.where((np.sum(data, axis=1) > self.min_tp) &
                                 (np.count_nonzero(data, axis=1) >= self.min_genes_per_cell))[0]
                 X_clean = data[normal_cells, self.normal_genes]
+
+                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
                 print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
