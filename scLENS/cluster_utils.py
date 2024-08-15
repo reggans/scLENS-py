@@ -19,8 +19,8 @@ import random, math
 
 # -----------------------GENERAL FUNCTIONS-----------------------
 
-def snn(X, n_neighbors=20, min_weight=1/15):
-    graph = kneighbors_graph(X, n_neighbors=n_neighbors).toarray()
+def snn(X, n_neighbors=20, min_weight=1/15, metric='cosine'):
+    graph = kneighbors_graph(X, n_neighbors=n_neighbors, metric=metric).toarray()
     # graph = torch.tensor(graph).to(device)
     
     dist = np.stack([get_snn_distance(graph, node) for node in range(graph.shape[0])])
@@ -46,6 +46,7 @@ def get_snn_distance(graph, node):
 def find_clusters(X, 
                   n_neighbors=20, 
                   min_weight=1/15, 
+                  metric='cosine',
                   res=1.2,
                   n_iterations=-1):
     """
@@ -71,7 +72,8 @@ def find_clusters(X,
 
     dist = snn(X, 
                n_neighbors=n_neighbors, 
-               min_weight=min_weight)
+               min_weight=min_weight, 
+               metric=metric)
     
     G = ig.Graph.Weighted_Adjacency(dist, mode='undirected')
     partition = la.find_partition(G,

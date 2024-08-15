@@ -201,6 +201,8 @@ def multiK(X,
         res = Counter(list(resolutions[idx])).most_common(1)[0][0]
         result.append(res)
     
+    print(f'Optimal resolutions: {result}')
+    
     if len(result) == 1:
         opt_res = result[0]
     else:
