@@ -186,7 +186,6 @@ renv/
 *.Rmd
 *.Rnw
 *.lock
-score_data.ipynb
 
 # Random
 Figures/
