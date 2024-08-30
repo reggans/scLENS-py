@@ -8,6 +8,7 @@ import random
 from collections import Counter
 
 from .utils import find_clusters, calculate_score
+from ..scLENS import scLENS
 
 from tqdm.auto import tqdm
 from tqdm_joblib import tqdm_joblib
@@ -22,6 +23,7 @@ def multiK(X,
            device='gpu',
            n_jobs=None,
            silent=False,
+           sclens_kwargs=None,
            **kwargs):
     """
     Predicts the optimal number of clusters k by 
@@ -32,7 +34,7 @@ def multiK(X,
     Parameters
     ----------
     X:  np.ndarray
-        Data to be clustered
+        Raw data to be clustered
     resolutions: list of float
         Range of resolutions to be tested
     reps: int
@@ -60,7 +62,11 @@ def multiK(X,
     else:
         resolutions = np.array(resolutions)
     
-    n = len(resolutions) * reps
+    if sclens_kwargs is None:
+        sclens_kwargs = dict()
+    
+    n_res = len(resolutions)
+    n = n_res * reps
     clusters = np.zeros((n, X.shape[0]))
     ks = np.zeros(n)
 
@@ -68,16 +74,26 @@ def multiK(X,
                   desc='Constructing samples', 
                   total=reps, 
                   disable=silent):
-        offset = reps * i
-        sample_cls = construct_sample_clusters(X,
+        sample_idx = random.sample(range(X.shape[0]), int(X.shape[0] * size))
+        full_cls = np.zeros((n_res, X.shape[0]))
+        full_cls.fill(-1)
+
+        scl = scLENS(X[sample_idx], silent=True, **sclens_kwargs)
+        scl.preprocess()
+        X_transform = scl.fit_transform()
+
+        offset = n_res * i
+        sample_cls = construct_sample_clusters(X_transform,
                                                reps=reps, 
                                                size=size,  
                                                res=res, 
                                                n_jobs=n_jobs,
                                                disable=True)
         
-        clusters[offset:offset+reps] = sample_cls
-        ks[offset:offset+reps] = [len(np.unique(cls)) - 1 for cls in sample_cls] # accomodate for label of dropped data
+        full_cls[:, sample_idx] = sample_cls
+        
+        clusters[offset:offset+n_res] = sample_cls
+        ks[offset:offset+n_res] = [len(np.unique(cls)) - 1 for cls in sample_cls] # accomodate for label of dropped data
     
     k_runs = [x[1] for x in sorted(Counter(ks).items())]
     k_unique = np.unique(ks)
@@ -162,21 +178,14 @@ def construct_sample_clusters(X,
 
     with tqdm_joblib(desc='Constructing samples', total=reps, **kwargs):
         parallel = Parallel(n_jobs=n_jobs)
-        clusters = parallel(sample_cluster(X, k=k, res=res, filler=filler) for _ in range(reps))
+        clusters = parallel(cluster(X, res=r) for r in res)
     return clusters
 
 @delayed
 @wrap_non_picklable_objects
-def sample_cluster(X, k, res=1.2, filler=-1):
-    """
-    Sample and cluster data
-    """
-    row = np.zeros(X.shape[0])
-    row.fill(filler)
-    sample = random.sample(range(X.shape[0]), k)
-    cls = find_clusters(X[sample], res=res)
-    np.put(row, sample, cls)
-    return row
+def cluster(X, res=1.2):
+    cls = find_clusters(X, res=res)
+    return cls
 
 def rPAC(consensus, x1=0.1, x2=0.9):
     """"""

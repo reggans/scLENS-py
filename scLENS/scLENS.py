@@ -4,7 +4,7 @@ import numpy as np
 import scipy
 from .PCA import PCA
 
-from .clustering import find_clusters
+from .clustering import find_clusters, chooseR, multiK, scSHC
 
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
@@ -421,17 +421,19 @@ class scLENS():
         if res is not None:
             self.resolution = res
         elif method == 'chooseR':
-            from .clustering import chooseR
-
             # self.resolution = chooseR(X_transform, **kwargs)
             return chooseR(X_transform, **kwargs)
         elif method == 'multiK':
-            from .clustering import multiK
+            sclens_kwargs = {"threshold": self.threshold,
+                             "sparsity": self.sparsity,
+                             "n_rand_matrix": self.n_rand_matrix,
+                             "sparsity_step": self.sparsity_step,
+                             "sparsity_threshold": self.sparsity_threshold,
+                             "perturbed_n_scale": self._perturbed_n_scale,
+                             "device": self.device}
 
-            self.resolution = multiK(X_transform, **kwargs)
+            self.resolution = multiK(X_transform, sclens_kwargs=sclens_kwargs, **kwargs)
         elif method == 'scSHC':
-            from .clustering import scSHC
-            
             if isinstance(X, pd.DataFrame):
                 normal_cells = np.where((np.sum(X.values, axis=1) > self.min_tp) &
                                 (np.count_nonzero(X.values, axis=1) >= self.min_genes_per_cell))[0]
