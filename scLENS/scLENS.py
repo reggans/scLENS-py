@@ -2,9 +2,9 @@ import torch
 import pandas as pd 
 import numpy as np
 import scipy
-# from joblib import Parallel, delayed, wrap_non_picklable_objects
-# import random, statistics
 from .PCA import PCA
+
+from .clustering import find_clusters
 
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
@@ -409,7 +409,6 @@ class scLENS():
                 n_iterations=-1,
                 **kwargs):
         """"""
-        from .cluster_utils import find_clusters
 
         X_transform = self.transform(X)
 
