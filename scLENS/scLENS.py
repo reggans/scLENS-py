@@ -17,7 +17,8 @@ class scLENS():
                  sparsity_step=0.002,
                  sparsity_threshold=0.9,
                  perturbed_n_scale = 2,
-                 device=None):
+                 device=None, 
+                 silent=False):
         """
         Parameters
         ----------
@@ -50,6 +51,7 @@ class scLENS():
         self.device = device    
         if device is None:
             self.device = torch.device("cpu")
+        self.silent = silent
     
     def preprocess(self, 
                    data, 
@@ -83,17 +85,19 @@ class scLENS():
                                 (np.count_nonzero(data.values, axis=1) >= self.min_genes_per_cell))[0]
                 X_clean = data.iloc[normal_cells, self.normal_genes].values
 
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+                if not self.silent:
+                    print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+                    print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
             else:
                 normal_cells = np.where((np.sum(data, axis=1) > self.min_tp) &
                                 (np.count_nonzero(data, axis=1) >= self.min_genes_per_cell))[0]
                 X_clean = data[normal_cells, self.normal_genes]
 
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+                if not self.silent:
+                    print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+                    print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
             X_clean = torch.tensor(X_clean, device=self.device, dtype=torch.double)
             X_clean = torch.transpose(torch.transpose(X_clean, 0, 1) / self.l1_norm, 0, 1)
@@ -107,11 +111,11 @@ class scLENS():
             return X_clean
         
         if isinstance(data, pd.DataFrame):
-            if not data.index.is_unique:
+            if not data.index.is_unique and not self.silent:
                 print("Cell names are not unique, resetting cell names")
                 data.index =  range(len(data.index))
 
-            if not data.columns.is_unique:
+            if not data.columns.is_unique and not self.silent:
                 print("Removing duplicate genes")
                 data = data.loc[:, ~data.columns.duplicated()]
         
@@ -125,7 +129,8 @@ class scLENS():
             
             self._raw = data.iloc[self.normal_cells, self.normal_genes]
 
-            print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+            if not self.silent:
+                print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         else:
             self.normal_genes = np.where((np.sum(data, axis=0) > min_tp) &
                                     (np.count_nonzero(data, axis=0) >= min_cells_per_gene))[0]
@@ -134,7 +139,8 @@ class scLENS():
             
             self._raw = pd.DataFrame(data[self.normal_cells][:, self.normal_genes])
 
-            print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
+            if not self.silent:
+                print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         
         X = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
         
@@ -212,7 +218,7 @@ class scLENS():
             raw = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
 
         score_all =  list()
-        for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix):
+        for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix, desc='Calculating robust components', disable=self.silent):
             # Construct random matrix
             rand = scipy.sparse.rand(self._raw.shape[0], self._raw.shape[1], 
                                     density=1-self.sparsity, 
