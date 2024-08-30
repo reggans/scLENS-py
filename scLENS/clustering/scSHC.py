@@ -1,242 +1,65 @@
 import numpy as np
-import torch
-import scipy.spatial
 import scipy
-import igraph as ig
-import leidenalg as la
-from sklearn.neighbors import kneighbors_graph
+from scipy.spatial.distance import pdist
+from scipy.cluster.hierarchy import linkage
 from sklearn.metrics.pairwise import cosine_distances
 from scipy.stats import norm
-from scipy.cluster.hierarchy import linkage
+from joblib import Parallel, delayed
 
-from numba import cuda
-from joblib import Parallel, delayed, wrap_non_picklable_objects
-from tqdm_joblib import tqdm_joblib
+import scipy.linalg
 
-from .scLENS import scLENS
-
-import random, math
-
-# -----------------------GENERAL FUNCTIONS-----------------------
-
-def snn(X, n_neighbors=20, min_weight=1/15, metric='cosine'):
-    graph = kneighbors_graph(X, n_neighbors=n_neighbors, metric=metric).toarray()
-    # graph = torch.tensor(graph).to(device)
-    
-    dist = np.stack([get_snn_distance(graph, node) for node in range(graph.shape[0])])
-
-    dist[dist < min_weight] = 0
-
-    for i, j in np.argwhere(dist):
-        dist[j, i] = dist[i, j]
-
-    return dist
-
-def get_snn_distance(graph, node):
-    row = graph[node]
-    idx = np.nonzero(row)
-    dist = np.zeros_like(row, dtype=np.float32)
-
-    for i in idx:
-        union = graph[i] + row
-        dist[i] = 1 - np.sum(union == 2) / np.count_nonzero(union)
-    
-    return dist.flatten()
-    
-def find_clusters(X, 
-                  n_neighbors=20, 
-                  min_weight=1/15, 
-                  metric='cosine',
-                  res=1.2,
-                  n_iterations=-1):
+def scSHC(X,
+          X_transform,
+          alpha=0.05,
+          device=None,
+          n_jobs=None):
     """
-    Find the clustering of the data using the Leiden algorithm,
-    using SNN to construct graph an calculate weights
-
-    Parameters
-    ----------
-    X: np.ndarray
-        Data to be clustered
-    n_neighbors: int
-        Number of nearest neighbors considered in NN graph
-    min_weight:
-        Minimum weight of the resulting SNN graph
-    res: float
-        Resolution of the Leiden algorithm; Higher values tend to yield more clusters
-    
-    Returns
-    -------
-    np.ndarray
-        Array of cluster number of each data point
+    Daniel Müllner, fastcluster: Fast Hierarchical, 
+    Agglomerative Clustering Routines for R and Python, 
+    Journal of Statistical Software, 53 (2013), no. 9, 1-18,
+    https://doi.org/10.18637/jss.v053.i09.
     """
+    nPC = X_transform.shape[1]
+    dist = pdist(X_transform, 'cosine')
+    dend = Dendrogram(linkage(dist, method='ward'))
+    test_queue = [dend.root]
+    clustering = np.zeros(X.shape[0]) - 1 # -1 for unassigned cluster
+    cluster_idx = 0
 
-    dist = snn(X, 
-               n_neighbors=n_neighbors, 
-               min_weight=min_weight, 
-               metric=metric)
-    
-    G = ig.Graph.Weighted_Adjacency(dist, mode='undirected')
-    partition = la.find_partition(G,
-                                  la.RBConfigurationVertexPartition,
-                                  weights=G.es['weight'],
-                                  n_iterations=n_iterations,
-                                  resolution_parameter=res)
-    
-    labels = np.zeros(X.shape[0])
-    for i, cluster in enumerate(partition):
-        for element in cluster:
-            labels[element] = i + 1
-    
-    return labels
+    while(test_queue):
+        test = test_queue.pop()
+        test_leaves = np.array(dend.get_subtree_leaves(test))
+        score = dend.get_score(test)
 
-def construct_sample_clusters(X,
-                              filler=-1,
-                              reps=100,
-                              size=0.8,
-                              res=1.2,
-                              n_jobs=None,
-                              **kwargs):
-    """
-    Creates clusterings based on a subset of the dataset
-    """
-    k = int(X.shape[0] * size)
+        alpha_level = alpha * ((test_leaves.shape[0] - 1) / (X.shape[0] - 1))
 
-    with tqdm_joblib(desc='Constructing samples', total=reps, **kwargs):
-        parallel = Parallel(n_jobs=n_jobs)
-        clusters = parallel(sample_cluster(X, k=k, res=res, filler=filler) for _ in range(reps))
-    return clusters
+        X_test = X[test_leaves[:, 0]]
+        label_test = test_leaves[:, 1]
+        X_test = X_test[:, np.sum(X_test, 0) > 0]
 
-@delayed
-@wrap_non_picklable_objects
-def sample_cluster(X, k, res=1.2, filler=-1):
-    """
-    Sample and cluster data
-    """
-    row = np.zeros(X.shape[0])
-    row.fill(filler)
-    sample = random.sample(range(X.shape[0]), k)
-    cls = find_clusters(X[sample], res=res)
-    np.put(row, sample, cls)
-    return row
+        n_cluster1 = np.sum(label_test)
+        n_cluster0 = len(label_test) - n_cluster1
 
-def calculate_score(clusters, n, reps, device='cpu'):
-    if device == 'gpu':
-        if cuda.is_available():
-            return calculate_score_gpu(clusters, n, reps)
+        print(f'ClusterID: {test}, Test Shape: {X_test.shape}')
+        
+        if min(n_cluster1, n_cluster0) < 20:
+            sig = 1
         else:
-            print('GPU is not available, function will be run in CPU')
-            return calculate_score_cpu(clusters, n, reps)
-    elif device == 'cpu':
-        return calculate_score_cpu(clusters, n, reps)
-    else:
-        raise Exception("Device not recognized. Please choose one of 'cpu' or 'gpu'")
+            sig = test_significance(X_test, label_test, nPC, score, alpha_level, n_jobs)
 
-def calculate_score_gpu(clusters, n, reps):
-    """
-    Score calculation on GPU
-    """
-    score = np.zeros((n, n), dtype=np.csingle)
-    score_device = cuda.to_device(score)
+        if (sig < alpha_level):
+            test_queue.extend(dend.get_children(test))
+        else:
+            test_idx = [x for (x, _) in test_leaves]
+            clustering[test_idx] = cluster_idx
+            cluster_idx += 1
 
-    threadsPerBlock = (16, 16)
-    blocksPerGrid_x = math.ceil(n / threadsPerBlock[0])
-    blocksPerGrid_y = math.ceil(n / threadsPerBlock[1])
-    blocksPerGrid = (blocksPerGrid_x, blocksPerGrid_y)
+            print(f'CLUSTER IDENTIFIED; Significance: {sig}, Total clusters: {cluster_idx}')
     
-    for row in clusters:
-        x_device = cuda.to_device(row)
-        outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_device, score_device)
-    
-    score = score_device.copy_to_host()
-    score = np.where(score.real > 0, percent_match(score, reps), 0)
-    
-    del score_device
-    cuda.current_context().memory_manager.deallocations.clear()
-    return score
+    return clustering
 
-@cuda.jit
-def outer_equality_kernel(x, out):
-    """
-    GPU kernel score calculation algorithm
-    """
-    tx, ty = cuda.grid(2)
+# Helper functions
 
-    if tx < x.shape[0] and ty < x.shape[0]:
-        if x[tx] == -1 or x[ty] == -1:
-            out[tx, ty] += 1j
-        elif x[tx] == x[ty]:
-            out[tx, ty] += 1
-
-def calculate_score_cpu(clusters, n, reps, n_jobs=None):
-    """
-    Calculate score on CPU
-    """
-    score = np.zeros((n, n), dtype=np.csingle)
-
-    for row in clusters:
-        parallel = Parallel(n_jobs=n_jobs)
-        parallel(outer_equality(row, idx, score) for idx in range(row.shape[0]))
-    
-    score = np.where(score.real > 0, percent_match(score, reps), 0)
-    return score
-
-@delayed
-def outer_equality(x, idx, out):
-    """
-    CPU score calculation algorithm
-    """
-    if x[idx] == -1:
-        out[:, idx] += 1j
-        return
-    
-    for i in range(x.shape[0]):
-        if x[i] == x[idx]:
-            out[i, idx] += 1
-        elif x[i] == -1:
-            out[i, idx] += 1j
-
-# -----------------------CHOOSER FUNCTIONS-----------------------
-            
-def group_silhouette(sil, labels):
-    """
-    Computes average per-cluster silhouette score 
-    """
-    sil_grp = list()
-    for cls in set(labels):
-        idx = np.where(labels == cls)
-        sil_grp.append(np.mean(sil[idx]))
-    return sil_grp   
-
-def percent_match(x, reps):
-    """
-    Percentage of co-clustering
-    """
-    return np.divide(x.real, (reps - x.imag), where=x.imag!=reps)
-
-# -----------------------MULTIK FUNCTIONS-----------------------
-
-def rPAC(consensus, x1=0.1, x2=0.9):
-    """"""
-    consensus[consensus == 0] = -1
-    consensus = np.ravel(np.tril(consensus))
-    consensus = consensus[consensus != 0]
-    consensus[consensus == -1] = 0
-
-    cdf = scipy.stats.ecdf(consensus).cdf
-    pac = cdf.evaluate(x2) - cdf.evaluate(x1)
-    zeros = np.sum(consensus == 0) / consensus.shape[0]
-    return pac / (1 - zeros)
-
-@delayed
-def calculate_one_minus_rpac(cluster, n, x1, x2, device='gpu'):
-    n_k = cluster.shape[0]
-    
-    consensus = calculate_score(cluster, n, n_k, device=device)
-
-    res = 1 - rPAC(consensus, x1, x2)
-    return res
-    
-# ------------------------SCSHC FUNCTIONS-------------------------
 def isPD(B):
     """Returns true when input is positive-definite, via Cholesky"""
     try:
@@ -403,7 +226,7 @@ def generate_null_stats(X, params, on_genes, nPC):
     
     null = null[np.sum(null, 1) > 0][:, np.sum(null, 0) > 0]
     null_gm = truncated_sclens(null, nPC)
-    dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
+    dist = pdist(null_gm, 'cosine')
     hc = Dendrogram(linkage(dist, method='ward'))
     # qual = hc.get_score(hc.root)
     leaves = np.array(hc.get_subtree_leaves(hc.root))

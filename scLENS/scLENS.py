@@ -418,7 +418,8 @@ class scLENS():
         elif method == 'chooseR':
             from .clustering import chooseR
 
-            self.resolution = chooseR(X_transform, **kwargs)
+            # self.resolution = chooseR(X_transform, **kwargs)
+            return chooseR(X_transform, **kwargs)
         elif method == 'multiK':
             from .clustering import multiK
 
