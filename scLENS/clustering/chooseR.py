@@ -71,6 +71,7 @@ def chooseR(X,
 
         sil = silhouette_samples(score, cls, metric='precomputed')
         sil_grp = group_silhouette(sil, cls)
+        sil_grp = (sil_grp,)
 
         # stats_row.append(confidence_interval(np.median, sil_grp)[0])
         stats_row.append(scipy.stats.bootstrap(sil_grp, np.median, n_resamples=25000).confidence_interval.low)
