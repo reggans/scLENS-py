@@ -78,8 +78,8 @@ def multiK(X,
         full_cls = np.zeros((n_res, X.shape[0]))
         full_cls.fill(-1)
 
-        scl = scLENS(X[sample_idx], silent=True, **sclens_kwargs)
-        scl.preprocess()
+        scl = scLENS(silent=True, **sclens_kwargs)
+        scl.preprocess(X[sample_idx])
         X_transform = scl.fit_transform()
 
         offset = n_res * i
