@@ -418,7 +418,7 @@ class scLENS():
         elif method == 'chooseR':
             # self.resolution = chooseR(X_transform, **kwargs)
             X_transform = self.transform(X)
-            return chooseR(X_transform, **kwargs)
+            cluster = chooseR(X_transform, **kwargs)
         elif method == 'multiK':
             sclens_kwargs = {"threshold": self.threshold,
                              "sparsity": 'auto',
@@ -433,6 +433,13 @@ class scLENS():
                 X = X.values
             
             self.resolution = multiK(X, sclens_kwargs=sclens_kwargs, **kwargs)
+
+            X_transform = self.transform(X)
+            cluster = find_clusters(X_transform, 
+                                n_neighbors=n_neighbors, 
+                                min_weight=min_weight, 
+                                res=self.resolution, 
+                                n_iterations=n_iterations)
         elif method == 'scSHC':
             if isinstance(X, pd.DataFrame):
                 normal_cells = np.where((np.sum(X.values, axis=1) > self.min_tp) &
@@ -447,11 +454,4 @@ class scLENS():
             return cluster
         else:
             raise Exception('Method not recognized')
-        
-        cluster = find_clusters(X_transform, 
-                                n_neighbors=n_neighbors, 
-                                min_weight=min_weight, 
-                                res=self.resolution, 
-                                n_iterations=n_iterations)
-        
         return cluster
