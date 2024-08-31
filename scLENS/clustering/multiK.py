@@ -1,6 +1,7 @@
 from sklearn.metrics import silhouette_score
 import numpy as np
 import scipy
+import torch
 from joblib import Parallel, delayed, wrap_non_picklable_objects
 import scipy.stats
 
@@ -78,15 +79,18 @@ def multiK(X,
         full_cls = np.zeros((n_res, X.shape[0]))
         full_cls.fill(-1)
 
-        scl = scLENS(silent=True, **sclens_kwargs)
-        scl.preprocess(X[sample_idx])
+        scl = scLENS(**sclens_kwargs)
+        scl.preprocess(X[sample_idx, :])
         X_transform = scl.fit_transform()
+
+        del scl
+        torch.cuda.empty_cache()
 
         offset = n_res * i
         sample_cls = construct_sample_clusters(X_transform,
                                                reps=reps, 
                                                size=size,  
-                                               res=res, 
+                                               res=resolutions, 
                                                n_jobs=n_jobs,
                                                disable=True)
         

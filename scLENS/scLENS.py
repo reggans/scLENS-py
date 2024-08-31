@@ -85,7 +85,6 @@ class scLENS():
 
                 if not self.silent:
                     print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
-
                     print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
             else:
                 normal_cells = np.where((np.sum(data, axis=1) > self.min_tp) &
@@ -94,7 +93,6 @@ class scLENS():
 
                 if not self.silent:
                     print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
-
                     print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
             X_clean = torch.tensor(X_clean, device=self.device, dtype=torch.double)
@@ -205,7 +203,7 @@ class scLENS():
                 self.X = torch.tensor(data.values).to(self.device, dtype=torch.double)
             else:
                 self.X = torch.tensor(data).to(self.device, dtype=torch.double)
-        
+
         self._signal_components = self._PCA(self.X, plot_mp=plot_mp)
 
         if self.sparsity == 'auto':
@@ -414,24 +412,27 @@ class scLENS():
                 **kwargs):
         """"""
         from .clustering import find_clusters, chooseR, multiK, scSHC
-        
-        X_transform = self.transform(X)
 
         if res is not None:
             self.resolution = res
         elif method == 'chooseR':
             # self.resolution = chooseR(X_transform, **kwargs)
+            X_transform = self.transform(X)
             return chooseR(X_transform, **kwargs)
         elif method == 'multiK':
             sclens_kwargs = {"threshold": self.threshold,
-                             "sparsity": self.sparsity,
+                             "sparsity": 'auto',
                              "n_rand_matrix": self.n_rand_matrix,
                              "sparsity_step": self.sparsity_step,
                              "sparsity_threshold": self.sparsity_threshold,
                              "perturbed_n_scale": self._perturbed_n_scale,
+                             "silent": True,
                              "device": self.device}
-
-            self.resolution = multiK(X_transform, sclens_kwargs=sclens_kwargs, **kwargs)
+            
+            if isinstance(X, pd.DataFrame):
+                X = X.values
+            
+            self.resolution = multiK(X, sclens_kwargs=sclens_kwargs, **kwargs)
         elif method == 'scSHC':
             if isinstance(X, pd.DataFrame):
                 normal_cells = np.where((np.sum(X.values, axis=1) > self.min_tp) &
