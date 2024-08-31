@@ -4,8 +4,6 @@ import numpy as np
 import scipy
 from .PCA import PCA
 
-from .clustering import find_clusters, chooseR, multiK, scSHC
-
 from tqdm.auto import tqdm
 import matplotlib.pyplot as plt
 
@@ -415,7 +413,8 @@ class scLENS():
                 n_iterations=-1,
                 **kwargs):
         """"""
-
+        from .clustering import find_clusters, chooseR, multiK, scSHC
+        
         X_transform = self.transform(X)
 
         if res is not None:
