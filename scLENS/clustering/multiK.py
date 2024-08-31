@@ -96,8 +96,8 @@ def multiK(X,
         
         full_cls[:, sample_idx] = sample_cls
         
-        clusters[offset:offset+n_res] = sample_cls
-        ks[offset:offset+n_res] = [len(np.unique(cls)) - 1 for cls in sample_cls] # accomodate for label of dropped data
+        clusters[offset:offset+n_res] = full_cls
+        ks[offset:offset+n_res] = [len(np.unique(cls)) - 1 for cls in full_cls] # accomodate for label of dropped data
     
     k_runs = [x[1] for x in sorted(Counter(ks).items())]
     k_unique = np.unique(ks)
