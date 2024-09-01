@@ -435,7 +435,7 @@ class scLENS():
                                     n_iterations=n_iterations)
             
         elif method == 'chooseR':
-            X_transform = self.transform(X)
+            X_transform = self.transform(X, preprocess=False)
             cluster = chooseR(X_transform, **kwargs)
         
         elif method == 'multiK':
