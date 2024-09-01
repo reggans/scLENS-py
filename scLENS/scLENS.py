@@ -330,7 +330,7 @@ class scLENS():
         if preprocess:
             X_clean = self.preprocess(X, precomputed=True)
         else:
-            X_clean = torch.tensor(X).to(self.device, dtype=torch.double)
+            X_clean = torch.tensor(X).clone().detach().to(self.device, dtype=torch.double)
         
         pcs = torch.tensor(self.robust_components).to(self.device, dtype=torch.double)
         transform = (X_clean @ X_clean.T @ pcs).cpu().numpy()
@@ -403,9 +403,9 @@ class scLENS():
         plt.show()
 
     def cluster(self, 
-                X,
+                X=None,
                 res=None,
-                method='chooseR',
+                method=None,
                 n_neighbors=20, 
                 min_weight=1/15, 
                 n_iterations=-1,
@@ -413,12 +413,31 @@ class scLENS():
         """"""
         from .clustering import find_clusters, chooseR, multiK, scSHC
 
-        if res is not None:
-            self.resolution = res
+        if X is None:
+            X = self._raw
+        elif isinstance(X, pd.DataFrame):
+            normal_cells = np.where((np.sum(X.values, axis=1) > self.min_tp) &
+                            (np.count_nonzero(X.values, axis=1) >= self.min_genes_per_cell))[0]
+            X = X.iloc[normal_cells, self.normal_genes].values
+        else:
+            normal_cells = np.where((np.sum(X, axis=1) > self.min_tp) &
+                            (np.count_nonzero(X, axis=1) >= self.min_genes_per_cell))[0]
+            X = X[normal_cells, self.normal_genes]
+
+        if method is None:
+            if res is None:
+                raise Exception('Provide a method or resolution')
+            X_transform = self.transform(X, preprocess=False)
+            cluster = find_clusters(X_transform,
+                                    n_neighbors=n_neighbors, 
+                                    min_weight=min_weight, 
+                                    res=res, 
+                                    n_iterations=n_iterations)
+            
         elif method == 'chooseR':
-            # self.resolution = chooseR(X_transform, **kwargs)
             X_transform = self.transform(X)
             cluster = chooseR(X_transform, **kwargs)
+        
         elif method == 'multiK':
             sclens_kwargs = {"threshold": self.threshold,
                              "sparsity": 'auto',
@@ -429,27 +448,16 @@ class scLENS():
                              "silent": True,
                              "device": self.device}
             
-            if isinstance(X, pd.DataFrame):
-                X = X.values
+            X_transform = self.transform(X, preprocess=False)
             
             self.resolution = multiK(X, sclens_kwargs=sclens_kwargs, **kwargs)
 
-            X_transform = self.transform(X)
             cluster = find_clusters(X_transform, 
                                 n_neighbors=n_neighbors, 
                                 min_weight=min_weight, 
                                 res=self.resolution, 
                                 n_iterations=n_iterations)
         elif method == 'scSHC':
-            if isinstance(X, pd.DataFrame):
-                normal_cells = np.where((np.sum(X.values, axis=1) > self.min_tp) &
-                                (np.count_nonzero(X.values, axis=1) >= self.min_genes_per_cell))[0]
-                X_clean = X.iloc[normal_cells, self.normal_genes].values
-            else:
-                normal_cells = np.where((np.sum(X, axis=1) > self.min_tp) &
-                                (np.count_nonzero(X, axis=1) >= self.min_genes_per_cell))[0]
-                X_clean = X[normal_cells, self.normal_genes]
-
             cluster = scSHC(X_clean, X_transform, **kwargs)
             return cluster
         else:
