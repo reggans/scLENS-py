@@ -458,7 +458,7 @@ class scLENS():
                                 res=self.resolution, 
                                 n_iterations=n_iterations)
         elif method == 'scSHC':
-            cluster = scSHC(X_clean, X_transform, **kwargs)
+            cluster = scSHC(X, X_transform, **kwargs)
             return cluster
         else:
             raise Exception('Method not recognized')
