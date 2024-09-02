@@ -330,7 +330,7 @@ class scLENS():
         if preprocess:
             X_clean = self.preprocess(X, precomputed=True)
         else:
-            X_clean = X.clone().detach().to(self.device, dtype=torch.double)
+            X_clean = torch.tensor(X).to(self.device, dtype=torch.double)
         
         pcs = torch.tensor(self.robust_components).to(self.device, dtype=torch.double)
         transform = (X_clean @ X_clean.T @ pcs).cpu().numpy()
