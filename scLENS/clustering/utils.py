@@ -8,26 +8,20 @@ from numba import cuda
 
 def snn(X, n_neighbors=20, min_weight=1/15, metric='cosine'):
     graph = kneighbors_graph(X, n_neighbors=n_neighbors, metric=metric).toarray()
+    neighbors = np.array([set(graph[i].nonzero()[0]) for i in range(graph.shape[0])])
     
-    dist = np.stack([get_snn_distance(graph, node) for node in range(graph.shape[0])])
+    dist = np.asarray([[get_snn_distance(neighbors[i], neighbors[j]) 
+                        for j in range(graph.shape[0])] 
+                        for i in range(graph.shape[0])])
 
-    dist[dist < min_weight] = 0
-
-    for i, j in np.argwhere(dist):
-        dist[j, i] = dist[i, j]
+    dist[dist > (1 - min_weight)] = 0
 
     return dist
 
-def get_snn_distance(graph, node):
-    row = graph[node]
-    idx = np.nonzero(row)
-    dist = np.zeros_like(row, dtype=np.float32)
-
-    for i in idx:
-        union = graph[i] + row
-        dist[i] = 1 - np.sum(union == 2) / np.count_nonzero(union)
-    
-    return dist.flatten()
+def get_snn_distance(n1, n2):
+    sim = len(n1.intersection(n2)) / len(n1)
+    dist = 1 - sim
+    return dist
     
 def find_clusters(X, 
                   n_neighbors=20, 
