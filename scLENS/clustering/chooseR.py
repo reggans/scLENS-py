@@ -84,8 +84,8 @@ def chooseR(X,
     stats = stats[stats['med'] >= threshold]
 
     if len(stats) == 1:
-        return stats['clustering']
-    return stats['clustering'].iloc[0]
+        return list(stats['clustering'])
+    return list(stats['clustering'].iloc[0])
 
 # Helper functions
 

@@ -457,6 +457,7 @@ class scLENS():
                                 min_weight=min_weight, 
                                 res=self.resolution, 
                                 n_iterations=n_iterations)
+            
         elif method == 'scSHC':
             cluster = scSHC(X, X_transform, **kwargs)
             return cluster
