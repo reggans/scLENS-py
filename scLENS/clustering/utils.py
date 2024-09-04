@@ -19,7 +19,7 @@ def snn(X, n_neighbors=20, min_weight=1/15, metric='cosine'):
     return dist
 
 def get_snn_distance(n1, n2):
-    sim = len(n1.intersection(n2)) / len(n1)
+    sim = len(n1.intersection(n2)) / len(n1.union(n2))
     dist = 1 - sim
     return dist
     
