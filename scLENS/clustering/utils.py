@@ -60,7 +60,8 @@ def find_clusters(X,
                                   la.RBConfigurationVertexPartition,
                                   weights=G.es['weight'],
                                   n_iterations=n_iterations,
-                                  resolution_parameter=res)
+                                  resolution_parameter=res,
+                                  n_iterations=10)
     
     labels = np.zeros(X.shape[0])
     for i, cluster in enumerate(partition):
