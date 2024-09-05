@@ -69,12 +69,12 @@ def chooseR(X,
         score = 1 - score
         np.fill_diagonal(score, 0)
 
-        if len(np.unique(cls)) == 1:
+        if len(np.unique(cls)) == 1 or len(np.unique(cls)) == X.shape[0]:
             stats_row.append(0)
             stats_row.append(0)
             stats.append(stats_row)
             continue
-        
+
         sil = silhouette_samples(score, cls, metric='precomputed')
         sil_grp = group_silhouette(sil, cls)
         sil_grp = (sil_grp,)
