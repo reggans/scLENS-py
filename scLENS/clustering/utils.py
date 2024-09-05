@@ -14,7 +14,7 @@ def snn(X, n_neighbors=20, min_weight=1/15, metric='cosine'):
                         for j in range(graph.shape[0])] 
                         for i in range(graph.shape[0])])
 
-    dist[dist > (1 - min_weight)] = 0
+    dist[dist > (1 - min_weight)] = 1
 
     return dist
 

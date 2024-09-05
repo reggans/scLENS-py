@@ -451,10 +451,9 @@ class scLENS():
                              "silent": True,
                              "device": self.device}
             
-            X_transform = self.transform(X, preprocess=False)
-            
             self.resolution = multiK(X, sclens_kwargs=sclens_kwargs, **kwargs)
 
+            X_transform = self.transform(X, preprocess=False)
             cluster = find_clusters(X_transform, 
                                 n_neighbors=n_neighbors, 
                                 min_weight=min_weight, 
