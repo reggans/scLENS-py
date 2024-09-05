@@ -71,23 +71,23 @@ def multiK(X,
     clusters = np.zeros((n, X.shape[0]))
     ks = np.zeros(n)
 
+    scl = scLENS(**sclens_kwargs)
+    scl.preprocess(X)
+    X_transform = scl.fit_transform()
+
     for i in tqdm(range(reps), 
                   desc='Constructing samples', 
                   total=reps, 
                   disable=silent):
-        sample_idx = random.sample(range(X.shape[0]), int(X.shape[0] * size))
+        sample_idx = random.sample(range(X_transform.shape[0]), int(X.shape[0] * size))
         full_cls = np.zeros((n_res, X.shape[0]))
         full_cls.fill(-1)
-
-        scl = scLENS(**sclens_kwargs)
-        scl.preprocess(X[sample_idx, :])
-        X_transform = scl.fit_transform()
 
         del scl
         torch.cuda.empty_cache()
 
         offset = n_res * i
-        sample_cls = construct_sample_clusters(X_transform,
+        sample_cls = construct_sample_clusters(X_transform[sample_idx],
                                                reps=reps, 
                                                size=size,  
                                                res=resolutions, 
