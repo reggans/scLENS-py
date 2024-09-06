@@ -111,7 +111,7 @@ def multiK(X,
                                                             device=device)
                                                             for k in k_unique)
 
-    points = np.array(list(zip(one_minus_rpac, k_runs, strict=True)))
+    points = np.array(list(zip(one_minus_rpac, k_runs)))
 
     if len(points) < 3:
         hull_points = points
