@@ -83,9 +83,6 @@ def multiK(X,
         full_cls = np.zeros((n_res, X.shape[0]))
         full_cls.fill(-1)
 
-        del scl
-        torch.cuda.empty_cache()
-
         offset = n_res * i
         sample_cls = construct_sample_clusters(X_transform[sample_idx],
                                                reps=reps, 
@@ -98,6 +95,9 @@ def multiK(X,
         
         clusters[offset:offset+n_res] = full_cls
         ks[offset:offset+n_res] = [len(np.unique(cls)) - 1 for cls in full_cls] # accomodate for label of dropped data
+    
+    del scl
+    torch.cuda.empty_cache()
     
     k_runs = [x[1] for x in sorted(Counter(ks).items())]
     k_unique = np.unique(ks)
