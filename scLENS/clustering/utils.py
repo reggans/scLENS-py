@@ -10,18 +10,18 @@ def snn(X, n_neighbors=20, min_weight=1/15, metric='cosine'):
     graph = kneighbors_graph(X, n_neighbors=n_neighbors, metric=metric).toarray()
     neighbors = np.array([set(graph[i].nonzero()[0]) for i in range(graph.shape[0])])
     
-    dist = np.asarray([[get_snn_distance(neighbors[i], neighbors[j]) 
+    sim = np.asarray([[get_snn_similarity(neighbors[i], neighbors[j]) 
                         for j in range(graph.shape[0])] 
-                        for i in range(graph.shape[0])])
+                        for i in range(graph.shape[0])]) 
 
-    dist[dist > (1 - min_weight)] = 1
+    sim[sim < min_weight] = 0
 
-    return dist
+    return sim
 
-def get_snn_distance(n1, n2):
+def get_snn_similarity(n1, n2):
     sim = len(n1.intersection(n2)) / len(n1.union(n2))
-    dist = 1 - sim
-    return dist
+    # dist = 1 - sim
+    return sim
     
 def find_clusters(X, 
                   n_neighbors=20, 
