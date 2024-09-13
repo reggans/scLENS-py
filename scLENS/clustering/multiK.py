@@ -71,20 +71,16 @@ def multiK(X,
     clusters = np.zeros((n, X.shape[0]))
     ks = np.zeros(n)
 
-    scl = scLENS(**sclens_kwargs)
-    scl.preprocess(X)
-    X_transform = scl.fit_transform()
-
     for i in tqdm(range(reps), 
                   desc='Constructing samples', 
                   total=reps, 
                   disable=silent):
-        sample_idx = random.sample(range(X_transform.shape[0]), int(X.shape[0] * size))
+        sample_idx = random.sample(range(X.shape[0]), int(X.shape[0] * size))
         full_cls = np.zeros((n_res, X.shape[0]))
         full_cls.fill(-1)
 
         offset = n_res * i
-        sample_cls = construct_sample_clusters(X_transform[sample_idx],
+        sample_cls = construct_sample_clusters(X[sample_idx],
                                                reps=reps, 
                                                size=size,  
                                                res=resolutions, 
@@ -95,10 +91,7 @@ def multiK(X,
         
         clusters[offset:offset+n_res] = full_cls
         ks[offset:offset+n_res] = [len(np.unique(cls)) - 1 for cls in full_cls] # accomodate for label of dropped data
-    
-    del scl
-    torch.cuda.empty_cache()
-    
+
     k_runs = [x[1] for x in sorted(Counter(ks).items())]
     k_unique = np.unique(ks)
     
