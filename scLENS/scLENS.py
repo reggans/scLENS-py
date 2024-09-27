@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 
 class scLENS():
     def __init__(self, 
-                 threshold=0.5, 
+                 threshold=0.3420201433256688, 
                  sparsity='auto', 
                  n_rand_matrix=10, 
                  sparsity_step=0.002,
@@ -96,13 +96,13 @@ class scLENS():
                 print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
 
             X_clean = torch.tensor(X_clean, device=self.device, dtype=torch.double)
-            X_clean = torch.transpose(torch.transpose(X_clean, 0, 1) / self.l1_norm, 0, 1)
+            X_clean = X_clean / self.l1_norm.unsqueeze(1)
             X_clean = torch.log(1 + X_clean)
 
             X_clean = (X_clean - self.mean) / self.std
 
-            X_clean = torch.transpose(torch.transpose(X_clean, 0, 1) / self.l2_norm, 0, 1) * torch.mean(self.l2_norm)
-            X_clean = torch.transpose(torch.transpose(X_clean, 0, 1) - torch.mean(X_clean, dim=1), 0, 1)
+            X_clean = X_clean / self.l2_norm.unsqueeze(1) * torch.mean(self.l2_norm)
+            X_clean = X_clean - torch.mean(X_clean, dim=0)
 
             return X_clean
         
@@ -140,7 +140,7 @@ class scLENS():
         
         # L1 and log normalization
         self.l1_norm = torch.linalg.vector_norm(X, ord=1, dim=1)
-        X = torch.transpose(torch.transpose(X, 0, 1) / self.l1_norm, 0, 1)
+        X = X / self.l1_norm.unsqueeze(1)
         X = torch.log(1 + X)
 
         # Z-score normalization
@@ -150,8 +150,8 @@ class scLENS():
 
         # L2 normalization
         self.l2_norm = torch.linalg.vector_norm(X, ord=2, dim=1)
-        X = torch.transpose(torch.transpose(X, 0, 1) / self.l2_norm, 0, 1) * torch.mean(self.l2_norm)
-        X = torch.transpose(torch.transpose(X, 0, 1) - torch.mean(X, dim=1), 0, 1)
+        X = X / self.l2_norm.unsqueeze(1) * torch.mean(self.l2_norm)
+        X = X - torch.mean(X, dim=0)
 
         self.X = X
         self.preprocessed = True
@@ -165,7 +165,7 @@ class scLENS():
     def _preprocess_rand(self, X):
         """Preprocessing that does not save data statistics"""
         l1_norm = torch.linalg.vector_norm(X, ord=1, dim=1)
-        X = torch.transpose(torch.transpose(X, 0, 1) / l1_norm, 0, 1)
+        X = X / l1_norm.unsqueeze(1)
         X = torch.log(1 + X)
 
         mean = torch.mean(X, dim=0)
@@ -173,8 +173,8 @@ class scLENS():
         X = (X - mean) / std
 
         l2_norm = torch.linalg.vector_norm(X, ord=2, dim=1)
-        X = torch.transpose(torch.transpose(X, 0, 1) / l2_norm, 0, 1) * torch.mean(l2_norm)
-        X = torch.transpose(torch.transpose(X, 0, 1) - torch.mean(X, dim=1), 0, 1)
+        X = X /l2_norm.unsqueeze(1) * torch.mean(l2_norm)
+        X = X - torch.mean(X, dim=0)
 
         torch.cuda.empty_cache()
         return X
@@ -206,12 +206,13 @@ class scLENS():
 
         if self.sparsity == 'auto':
             self._calculate_sparsity()
-
-        n = self._signal_components.shape[1] * self._perturbed_n_scale
+        
         if self.preprocessed:
             raw = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
 
-        score_all =  list()
+        n = min(self._signal_components.shape[1] * self._perturbed_n_scale, self.X.shape[1])
+
+        pert_vecs = list()
         for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix):
             # Construct random matrix
             rand = scipy.sparse.rand(self._raw.shape[0], self._raw.shape[1], 
@@ -226,20 +227,32 @@ class scLENS():
             else:
                 rand = self.X + rand
             perturbed = self._PCA_rand(rand, n)
+            pert_vecs.append(perturbed)
 
-            # Find robust components
-            pert_scores = self._calculate_correlation(self._signal_components, perturbed)
-            score_all.append(pert_scores)
-
-            del rand, perturbed
+            del rand
             torch.cuda.empty_cache()
 
-        score_all = np.array(score_all)
-        robust = np.average(score_all, axis=0) > self.threshold
-        self.robust_components = self._signal_components[:, robust].cpu().numpy()
-        self.robust_scores = score_all
+        # Select the most correlated components for each perturbation
+        pert_select = [torch.argmax(torch.abs( \
+            torch.transpose(self._signal_components, 0, 1) @ x), dim=1) \
+            for x in pert_vecs]
+        pert_vecs = [x[:, idx] for x, idx in zip(pert_vecs, pert_select)]
+        
+        # Calculate correlation between perturbed components
+        pert_scores = list()
+        for i in range(self.n_rand_matrix):
+            for j in range(i+1, self.n_rand_matrix):
+                dots = torch.transpose(pert_vecs[i], 0, 1) @ pert_vecs[j]
+                corr = torch.max(torch.abs(dots), dim=1).values
+                pert_scores.append(corr.cpu().numpy())
+        
+        pert_scores = np.array(pert_scores)
+        pvals = np.sum(pert_scores < self.threshold, axis=0) / pert_scores.shape[0]
+        robust = pvals > 0.01
 
-        del raw, pert_scores
+        self.robust_components = self._signal_components[:, robust].cpu().numpy()
+
+        del raw, pert_scores, pert_vecs, pert_select
         torch.cuda.empty_cache()
 
     def _calculate_sparsity(self):
@@ -248,51 +261,48 @@ class scLENS():
         sparse = 0.999
         zero_idx = np.nonzero(self._raw.values == 0)
         n_zero = zero_idx[0].shape[0]
-
-        # Calculate avg eigenvector correlation b/w 2 binary random matrices 
-        data_sparsity = n_zero / (self._raw.shape[0] * self._raw.shape[1])
-        Vr = list()
-        for _ in range(2):
-            rand = scipy.sparse.rand(self._raw.shape[0], self._raw.shape[1], 
-                                    density=1-data_sparsity, 
-                                    format='csr')
-            rand.data[:] = 1
-            rand = torch.tensor(rand.toarray()).to(self.device)
-
-            V = self._PCA_rand(rand, rand.shape[0])
-            Vr.append(V)
-
-            del rand
-            torch.cuda.empty_cache()
+        rng = np.random.default_rng()
         
-        thresh = torch.mean(torch.abs(torch.transpose(Vr[0], 0, 1) @ Vr[1]))
+        # Calculate threshold for correlation
+        n_sampling = min(self.X.shape)
+        thresh = np.mean([max(np.abs(rng.normal(0, np.sqrt(1/n_sampling), n_sampling)))
+                            for _ in range(5000)]).item()
 
+        # Construct binarized data matrix
         bin = scipy.sparse.csr_array(self._raw.values)
         bin.data[:] = 1
         bin = torch.tensor(bin.toarray()).to(self.device)
         bin = self._preprocess_rand(bin)
         Vb = self._PCA_rand(bin, bin.shape[0])
+        n_vbp = Vb.shape[1]//2
 
-        rng = np.random.default_rng()
+        n_buffer = 5
+        buffer = [1] * n_buffer
         while sparse > self.sparsity_threshold:
             n_pert = int(sparse * n_zero)
             selection = rng.integers(n_zero, size=n_pert)
             idx = [x[selection] for x in zero_idx]
 
+            # Construct perturbed data matrix
             pert = torch.zeros_like(bin, device=self.device)
             pert[idx] = 1
             pert += bin
+            pert = self._preprocess_rand(pert)
 
             W = (pert @ torch.transpose(pert, 0, 1)) / pert.shape[1]
             eval, evec = torch.linalg.eigh(W)
             Vbp = evec[:, eval != 0]
-            n_vbp = Vbp.shape[1]//2
-            Vbp = Vbp[:, -n_vbp:]
+            Vbp = Vbp[:, :n_vbp]
 
-            corr = torch.min(torch.abs(torch.transpose(Vb, 0, 1) @ Vbp))
+            # Calculate correlation between perturbed and original data
+            corr_arr = torch.max(torch.abs(torch.transpose(Vb, 0, 1) @ Vbp), dim=1).values.cpu().numpy()
+            corr = min(corr_arr[corr_arr > 1e-3])
 
-            if corr < thresh:
-                self.sparsity = sparse
+            buffer.pop(0)
+            buffer.append(corr)
+
+            if all([x < thresh for x in buffer]):
+                self.sparsity = sparse + self.sparsity_step * (n_buffer - 1)
                 break
             else:
                 sparse -= self.sparsity_step
@@ -302,11 +312,6 @@ class scLENS():
         
         del bin
         torch.cuda.empty_cache()
-    
-    def _calculate_correlation(self, X, Y):
-        X = torch.transpose(X, 0, 1)
-        dots = torch.abs(X @ Y)
-        return [float(max(row)) for row in dots]
     
     def transform(self, X, preprocess=True):
         """
@@ -328,7 +333,10 @@ class scLENS():
         if preprocess:
             X_clean = self.preprocess(X, precomputed=True)
         else:
-            X_clean = torch.tensor(X).to(self.device, dtype=torch.double)
+            if isinstance(X, torch.Tensor):
+                X_clean = X.to(self.device, dtype=torch.double)
+            else:
+                X_clean = torch.tensor(X).to(self.device, dtype=torch.double)
         
         pcs = torch.tensor(self.robust_components).to(self.device, dtype=torch.double)
         transform = (X_clean @ X_clean.T @ pcs).cpu().numpy()
