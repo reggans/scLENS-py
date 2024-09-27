@@ -237,7 +237,6 @@ class scLENS():
             torch.transpose(self._signal_components, 0, 1) @ x), dim=1) \
             for x in pert_vecs]
         pert_vecs = [x[:, idx] for x, idx in zip(pert_vecs, pert_select)]
-        print(pert_select)
         
         # Calculate correlation between perturbed components
         pert_scores = list()
@@ -246,11 +245,9 @@ class scLENS():
                 dots = torch.transpose(pert_vecs[i], 0, 1) @ pert_vecs[j]
                 corr = torch.max(torch.abs(dots), dim=1).values
                 pert_scores.append(corr.cpu().numpy())
-        print(pert_scores)
         
         pert_scores = np.array(pert_scores)
         pvals = np.sum(pert_scores < self.threshold, axis=0) / pert_scores.shape[0]
-        print(pvals)
         robust = pvals < 0.01
 
         self.robust_components = self._signal_components[:, robust].cpu().numpy()
