@@ -225,7 +225,7 @@ class scLENS():
         robust = pvals < 0.01
 
         self.X_transform = pca_result[1][:, robust] * np.sqrt(pca_result[0][robust]).reshape(1, -1)
-        self.robust_scores = np.mean(pert_scores, axis=1)
+        self.robust_scores = pert_scores
 
         del raw, pert_scores, pert_vecs, pert_select
         torch.cuda.empty_cache()
@@ -328,11 +328,14 @@ class scLENS():
         plt.show()
     
     def plot_robust_score(self):
-        print(self.robust_scores.shape)
-        std = np.std(self.robust_scores, axis=0)
-        avg = np.average(self.robust_scores, axis=0)
-        plt.errorbar(np.arange(0, avg.shape[0]), avg, std, fmt='o', capsize=4)
-        plt.axhline(y=self.threshold, color='r', linestyle='--')
+        n_fragile = self.robust_scores.shape[1] - self.X_transform.shape[1]
+        for i in range(self.robust_scores.shape[1]):
+            if i < n_fragile:
+                plt.scatter(i*np.ones_like(self.robust_scores[:, i]), self.robust_scores[:, i], c='r', alpha=0.1)
+            else:
+                plt.scatter(i*np.ones_like(self.robust_scores[:, i]), self.robust_scores[:, i], c='g', alpha=0.1)
+    
+        plt.axhline(y=self.threshold, color='k', linestyle='--')
         plt.ylabel('Robustness Score')
         plt.title('Signal Component Robustness')
         plt.show()
