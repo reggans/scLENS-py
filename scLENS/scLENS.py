@@ -150,8 +150,6 @@ class scLENS():
         l2_norm = torch.linalg.vector_norm(X, ord=2, dim=1)
         X = X /l2_norm.unsqueeze(1) * torch.mean(l2_norm)
         X = X - torch.mean(X, dim=0)
-
-        torch.cuda.empty_cache()
         return X
 
     def fit_transform(self, data=None, plot_mp=False):
@@ -203,9 +201,6 @@ class scLENS():
             perturbed = self._PCA_rand(rand, n)
             pert_vecs.append(perturbed)
 
-            del rand
-            torch.cuda.empty_cache()
-
         # Select the most correlated components for each perturbation
         pert_select = [torch.argmax(torch.abs( \
             torch.transpose(self._signal_components, 0, 1) @ x), dim=1) \
@@ -222,12 +217,12 @@ class scLENS():
         
         pert_scores = np.array(pert_scores)
         pvals = np.sum(pert_scores < self.threshold, axis=0) / pert_scores.shape[0]
-        robust = pvals < 0.01
+        self._robust_idx = pvals < 0.01
 
-        self.X_transform = pca_result[1][:, robust] * np.sqrt(pca_result[0][robust]).reshape(1, -1)
+        self.X_transform = pca_result[1][:, self._robust_idx] * np.sqrt(pca_result[0][self._robust_idx]).reshape(1, -1)
         self.robust_scores = pert_scores
 
-        del raw, pert_scores, pert_vecs, pert_select
+        del raw, pert_scores, pert_vecs, pert_select, rand
         torch.cuda.empty_cache()
 
         return self.X_transform
@@ -252,7 +247,6 @@ class scLENS():
         bin = torch.tensor(bin.toarray()).to(self.device)
         Vb = self._PCA_rand(self._preprocess_rand(bin), bin.shape[0])
         n_vbp = Vb.shape[1]//2
-        # n_vbp = self._signal_components.shape[1]
 
         n_buffer = 5
         buffer = [1] * n_buffer
@@ -283,11 +277,8 @@ class scLENS():
                 break
             
             sparse -= self.sparsity_step
-            
-            del pert, Vbp
-            torch.cuda.empty_cache()
         
-        del bin
+        del bin, pert, Vbp
         torch.cuda.empty_cache()
 
     def _PCA(self, X, plot_mp=False):
@@ -328,12 +319,11 @@ class scLENS():
         plt.show()
     
     def plot_robust_score(self):
-        n_fragile = self.robust_scores.shape[1] - self.X_transform.shape[1]
         for i in range(self.robust_scores.shape[1]):
-            if i < n_fragile:
-                plt.scatter(i*np.ones_like(self.robust_scores[:, i]), self.robust_scores[:, i], c='r', alpha=0.1)
-            else:
+            if i in np.where(self._robust_idx)[0]:
                 plt.scatter(i*np.ones_like(self.robust_scores[:, i]), self.robust_scores[:, i], c='g', alpha=0.1)
+            else:
+                plt.scatter(i*np.ones_like(self.robust_scores[:, i]), self.robust_scores[:, i], c='r', alpha=0.1)
     
         plt.axhline(y=self.threshold, color='k', linestyle='--')
         plt.ylabel('Robustness Score')
