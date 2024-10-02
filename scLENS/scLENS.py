@@ -13,8 +13,8 @@ class scLENS():
     def __init__(self, 
                  threshold=0.3420201433256688, 
                  sparsity='auto', 
-                 n_rand_matrix=10, 
-                 sparsity_step=0.002,
+                 n_rand_matrix=20, 
+                 sparsity_step=0.001,
                  sparsity_threshold=0.9,
                  perturbed_n_scale = 2,
                  device=None):
@@ -56,7 +56,6 @@ class scLENS():
                    min_tp=0, 
                    min_genes_per_cell=200, 
                    min_cells_per_gene=15,
-                   precomputed=False,
                    plot=False):
         """
         Preprocesses the data
@@ -77,34 +76,6 @@ class scLENS():
         pandas.DataFrame
             Preprocessed data
         """
-        if precomputed:
-            if isinstance(data, pd.DataFrame):
-                normal_cells = np.where((np.sum(data.values, axis=1) > self.min_tp) &
-                                (np.count_nonzero(data.values, axis=1) >= self.min_genes_per_cell))[0]
-                X_clean = data.iloc[normal_cells, self.normal_genes].values
-
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
-
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
-            else:
-                normal_cells = np.where((np.sum(data, axis=1) > self.min_tp) &
-                                (np.count_nonzero(data, axis=1) >= self.min_genes_per_cell))[0]
-                X_clean = data[normal_cells, self.normal_genes]
-
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
-
-                print(f'Removed {data.shape[0] - len(normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
-
-            X_clean = torch.tensor(X_clean, device=self.device, dtype=torch.double)
-            X_clean = X_clean / self.l1_norm.unsqueeze(1)
-            X_clean = torch.log(1 + X_clean)
-
-            X_clean = (X_clean - self.mean) / self.std
-
-            X_clean = X_clean / self.l2_norm.unsqueeze(1) * torch.mean(self.l2_norm)
-            X_clean = X_clean - torch.mean(X_clean, dim=0)
-
-            return X_clean
         
         if isinstance(data, pd.DataFrame):
             if not data.index.is_unique:
@@ -134,6 +105,10 @@ class scLENS():
             
             self._raw = pd.DataFrame(data[self.normal_cells][:, self.normal_genes])
 
+            self.min_tp = min_tp
+            self.min_cells_per_gene = min_cells_per_gene
+            self.min_genes_per_cell = min_genes_per_cell
+            
             print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         
         X = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
@@ -179,10 +154,11 @@ class scLENS():
         torch.cuda.empty_cache()
         return X
 
-    def fit(self, data=None, plot_mp=False):
+    def fit_transform(self, data=None, plot_mp=False):
         """
         Fits to the data by finding signal eigenvectors 
-        and selecting robust eigenvectors from it
+        and selecting robust eigenvectors from it, and
+        projects the data to the robust eigenvectors
 
         Parameters
         ----------
@@ -202,7 +178,8 @@ class scLENS():
             else:
                 self.X = torch.tensor(data).to(self.device, dtype=torch.double)
         
-        self._signal_components = self._PCA(self.X, plot_mp=plot_mp)
+        pca_result = self._PCA(self.X, plot_mp=plot_mp)
+        self._signal_components = torch.tensor(pca_result[1]).to(self.device, dtype=torch.double)
 
         if self.sparsity == 'auto':
             self._calculate_sparsity()
@@ -222,10 +199,7 @@ class scLENS():
             rand = torch.tensor(rand.toarray()).to(self.device)
         
             # Construct perturbed components
-            if self.preprocessed:
-                rand = self._preprocess_rand(raw + rand)
-            else:
-                rand = self.X + rand
+            rand = self._preprocess_rand(raw + rand)
             perturbed = self._PCA_rand(rand, n)
             pert_vecs.append(perturbed)
 
@@ -250,37 +224,41 @@ class scLENS():
         pvals = np.sum(pert_scores < self.threshold, axis=0) / pert_scores.shape[0]
         robust = pvals < 0.01
 
-        self.robust_components = self._signal_components[:, robust].cpu().numpy()
+        self.X_transform = pca_result[1][:, robust] * np.sqrt(pca_result[0][robust]).reshape(1, -1)
+        self.robust_scores = np.mean(pert_scores, axis=1)
 
         del raw, pert_scores, pert_vecs, pert_select
         torch.cuda.empty_cache()
 
+        return self.X_transform
+
     def _calculate_sparsity(self):
         """Automatic sparsity level calculation"""
-
         sparse = 0.999
         zero_idx = np.nonzero(self._raw.values == 0)
+        n_len = self.X.shape[0]*self.X.shape[1]
         n_zero = zero_idx[0].shape[0]
-        rng = np.random.default_rng()
         
+        rng = np.random.default_rng()
         # Calculate threshold for correlation
         n_sampling = min(self.X.shape)
         thresh = np.mean([max(np.abs(rng.normal(0, np.sqrt(1/n_sampling), n_sampling)))
                             for _ in range(5000)]).item()
+        print(f'sparsity_th: {thresh}')
 
         # Construct binarized data matrix
         bin = scipy.sparse.csr_array(self._raw.values)
         bin.data[:] = 1
         bin = torch.tensor(bin.toarray()).to(self.device)
-        bin = self._preprocess_rand(bin)
-        Vb = self._PCA_rand(bin, bin.shape[0])
+        Vb = self._PCA_rand(self._preprocess_rand(bin), bin.shape[0])
         n_vbp = Vb.shape[1]//2
+        # n_vbp = self._signal_components.shape[1]
 
         n_buffer = 5
         buffer = [1] * n_buffer
         while sparse > self.sparsity_threshold:
-            n_pert = int(sparse * n_zero)
-            selection = rng.integers(n_zero, size=n_pert)
+            n_pert = int((1-sparse) * n_len)
+            selection = np.random.choice(n_zero,n_pert,replace=False)
             idx = [x[selection] for x in zero_idx]
 
             # Construct perturbed data matrix
@@ -288,79 +266,29 @@ class scLENS():
             pert[idx] = 1
             pert += bin
             pert = self._preprocess_rand(pert)
-
-            W = (pert @ torch.transpose(pert, 0, 1)) / pert.shape[1]
-            eval, evec = torch.linalg.eigh(W)
-            Vbp = evec[:, eval != 0]
+            Vbp = self._PCA_rand(pert, pert.shape[0])
             Vbp = Vbp[:, :n_vbp]
 
             # Calculate correlation between perturbed and original data
-            corr_arr = torch.max(torch.abs(torch.transpose(Vb, 0, 1) @ Vbp), dim=1).values.cpu().numpy()
-            corr = min(corr_arr[corr_arr > 1e-3])
+            corr_arr = torch.max(torch.abs(torch.transpose(Vb, 0, 1) @ Vbp), dim=0).values.cpu().numpy()
+            # corr = min(corr_arr[corr_arr > 1e-3])
+            corr = np.sort(corr_arr)[1]
 
             buffer.pop(0)
             buffer.append(corr)
 
+            print(f'Min(corr): {corr}, sparsity: {sparse}, add_ilen: {selection.shape}')
             if all([x < thresh for x in buffer]):
                 self.sparsity = sparse + self.sparsity_step * (n_buffer - 1)
                 break
-            else:
-                sparse -= self.sparsity_step
-        
-            del pert, W, eval, evec, Vbp
+            
+            sparse -= self.sparsity_step
+            
+            del pert, Vbp
             torch.cuda.empty_cache()
         
         del bin
         torch.cuda.empty_cache()
-    
-    def transform(self, X, preprocess=True):
-        """
-        Projects the input data X to the robust components
-
-        Parameters
-        ----------
-        X: pandas.DataFrame
-            Data to project. Should have the same genes as the training data. 
-            If preprocess = False, assumed to already be preprocessed
-        preprocess: bool, default = True
-            Whether to preprocess X or not
-        
-        Returns
-        -------
-        numpy.ndarray
-            Projected data
-        """
-        if preprocess:
-            X_clean = self.preprocess(X, precomputed=True)
-        else:
-            if isinstance(X, torch.Tensor):
-                X_clean = X.to(self.device, dtype=torch.double)
-            else:
-                X_clean = torch.tensor(X).to(self.device, dtype=torch.double)
-        
-        pcs = torch.tensor(self.robust_components).to(self.device, dtype=torch.double)
-        transform = (X_clean @ X_clean.T @ pcs).cpu().numpy()
-
-        del X_clean
-        torch.cuda.empty_cache()
-        return transform
-    
-    def fit_transform(self, data=None, plot_mp=False):
-        """
-        Fits to data and projects it to the robust components
-
-        Parameters
-        ----------
-        data: pandas.DataFrame, np.ndarray
-            Data to fit. If preprocess() has been called, will use the saved preprocessed data instead. default = None
-        
-        Returns
-        -------
-        numpy.ndarray
-            Projected data
-        """
-        self.fit(data, plot_mp=plot_mp)
-        return self.transform(self.X, preprocess=False)
 
     def _PCA(self, X, plot_mp=False):
         pca = PCA(device=self.device)
@@ -369,11 +297,11 @@ class scLENS():
         if plot_mp:
             pca.plot_mp(comparison=False)
             plt.show()
-        comp = pca.get_signal_components()[1]
+        comp = pca.get_signal_components()
 
         del pca
         torch.cuda.empty_cache()
-        return torch.tensor(comp).to(self.device, dtype=torch.double)
+        return comp
     
     def _PCA_rand(self, X, n):
         W = (X @ torch.transpose(X, 0, 1)) / X.shape[1]
@@ -400,6 +328,7 @@ class scLENS():
         plt.show()
     
     def plot_robust_score(self):
+        print(self.robust_scores.shape)
         std = np.std(self.robust_scores, axis=0)
         avg = np.average(self.robust_scores, axis=0)
         plt.errorbar(np.arange(0, avg.shape[0]), avg, std, fmt='o', capsize=4)
