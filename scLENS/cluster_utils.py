@@ -150,7 +150,7 @@ def calculate_score_gpu(clusters, n, reps):
     score = score_device.copy_to_host()
     score = np.where(score.real > 0, percent_match(score, reps), 0)
     
-    del score_device
+    del score_device, x_device
     cuda.current_context().memory_manager.deallocations.clear()
     return score
 

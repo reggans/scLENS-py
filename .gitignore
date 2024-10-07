@@ -173,6 +173,7 @@ data/
 # Testing Files
 tests.ipynb
 score_data.ipynb
+figure.ipynb
 
 # R files
 R_comparison_clusters/

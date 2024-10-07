@@ -53,7 +53,7 @@ def chooseR(X,
     resolutions = set(resolutions)
     stats = list()
     for res in tqdm(resolutions,
-                    desc='Calculating scores', 
+                    desc='ChooseR', 
                     total=len(resolutions), 
                     disable=silent):
         stats_row = [res]
@@ -141,7 +141,7 @@ def multiK(X,
     ks = np.zeros(n)
 
     for i, res in tqdm(enumerate(resolutions), 
-                       desc='Constructing samples', 
+                       desc='MultiK', 
                        total=len(resolutions), 
                        disable=silent):
         offset = reps * i
@@ -158,14 +158,13 @@ def multiK(X,
     k_runs = [x[1] for x in sorted(Counter(ks).items())]
     k_unique = np.unique(ks)
     
-    with tqdm_joblib(desc='Calculating rPAC', total=len(k_unique)):
-        parallel = Parallel(n_jobs=n_jobs)
-        one_minus_rpac = parallel(calculate_one_minus_rpac(clusters[ks==k], 
-                                                            X.shape[0],
-                                                            x1,
-                                                            x2,
-                                                            device=device)
-                                                            for k in k_unique)
+    parallel = Parallel(n_jobs=n_jobs)
+    one_minus_rpac = parallel(calculate_one_minus_rpac(clusters[ks==k], 
+                                                        X.shape[0],
+                                                        x1,
+                                                        x2,
+                                                        device=device)
+                                                        for k in k_unique)
 
     points = np.array(list(zip(one_minus_rpac, k_runs)))
 
@@ -189,11 +188,11 @@ def multiK(X,
         opt_points = np.concatenate([hull_points[:best_run + 1], hull_points[best_rpac:]])
         opt_k = np.concatenate([hull_k[:best_run + 1], hull_k[best_rpac:]])
 
-    plt.plot(points[:, 0], points[:, 1], 'ko')
-    plt.plot(opt_points[:, 0], opt_points[:, 1], 'ro')
-    for i, k in enumerate(opt_k):
-        plt.annotate(str(k), (opt_points[i, 0], opt_points[i, 1]))
-    plt.show()
+    # plt.plot(points[:, 0], points[:, 1], 'ko')
+    # plt.plot(opt_points[:, 0], opt_points[:, 1], 'ro')
+    # for i, k in enumerate(opt_k):
+    #     plt.annotate(str(k), (opt_points[i, 0], opt_points[i, 1]))
+    # plt.show()
 
     result = list()
     for k in opt_k:
@@ -203,25 +202,25 @@ def multiK(X,
     
     print(f'Optimal resolutions: {result}')
     
-    if len(result) == 1:
-        opt_res = result[0]
-    else:
-        if metric is None:
-            from sklearn.metrics import silhouette_score
-            metric = silhouette_score
+    # if len(result) == 1:
+    #     opt_res = result[0]
+    # else:
+    #     if metric is None:
+    #         from sklearn.metrics import silhouette_score
+    #         metric = silhouette_score
 
-        best = 0
-        opt_res = None
-        for res in result:
-            cls = find_clusters(X, res=res)
-            if len(np.unique(cls)) == 1 and metric == silhouette_score:
-                continue
-            score = metric(X, cls, **kwargs)
-            if score > best:
-                best = score
-                opt_res = res
+    #     best = 0
+    #     opt_res = None
+    #     for res in result:
+    #         cls = find_clusters(X, res=res)
+    #         if len(np.unique(cls)) == 1 and metric == silhouette_score:
+    #             continue
+    #         score = metric(X, cls, **kwargs)
+    #         if score > best:
+    #             best = score
+    #             opt_res = res
 
-    return opt_res
+    return result
 
 def scSHC(X,
           X_transform,

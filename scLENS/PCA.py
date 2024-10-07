@@ -38,29 +38,17 @@ class PCA(randomly.Rm):
             Returns the instance itself
         """
         if not self._preprocessing_flag:
-            self.X = X
+            # self.X = X
             self.n_cells = X.shape[0]
             self.n_genes = X.shape[1]
             # self.X3 = pd.DataFrame(self.X, index=self.normal_cells, columns=self.normal_genes)
 
-        self._fit()
-        return
-    
-    def _fit(self):
-        """Fit the model for the dataframe df and apply
-           the dimensionality reduction by removing the eigenvalues
-           that follow Marchenko - Pastur distribution
-        """
-        # self.mean_ = np.mean(self.X, axis=0)
-        # self.std_ = np.std(self.X, axis=0, ddof=0)
-        # self.X = (self.X-self.mean_) / (self.std_+0.0)
-
         """Dispatch to the right submethod depending on
            the chosen solver"""
         if self.eigen_solver == 'wishart':
-            Y = self._wishart_matrix(self.X)
+            Y = self._wishart_matrix(X)
             (self.L, self.V) = self._get_eigen(Y)
-            Xr = self._random_matrix(self.X)
+            Xr = self._random_matrix(X)
             Yr = self._wishart_matrix(Xr)
             (self.Lr, self.Vr) = self._get_eigen(Yr)
 
@@ -108,18 +96,23 @@ class PCA(randomly.Rm):
     
     def _wishart_matrix(self, X):
         """Compute Wishart Matrix of the cells"""
-        return (X @ torch.transpose(X, 0, 1)) / X.shape[1]
+        Y = (X @ torch.transpose(X, 0, 1)) / X.shape[1]
+        torch.cuda.empty_cache()
+        return Y
     
     def _random_matrix(self, X):
-        return torch.stack([
+        Xr = torch.stack([
             row[torch.randperm(row.shape[0])] for row in torch.unbind(X, dim=0)
         ], dim=0)
+        torch.cuda.empty_cache()
+        return Xr
 
     def _get_eigen(self, Y):
         """Compute Eigenvalues of the real symmetric matrix"""
         (L, V) = torch.linalg.eigh(Y)
         L = L.cpu().numpy()
         V = V.cpu().numpy()
+        torch.cuda.empty_cache()
         return (L, V)
     
     def plot_mp(self, comparison=True, path=False,

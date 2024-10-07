@@ -94,7 +94,7 @@ class scLENS():
             self.min_cells_per_gene = min_cells_per_gene
             self.min_genes_per_cell = min_genes_per_cell
             
-            self._raw = data.iloc[self.normal_cells, self.normal_genes]
+            self._raw = data.iloc[self.normal_cells, self.normal_genes].values
 
             print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         else:
@@ -103,7 +103,7 @@ class scLENS():
             self.normal_cells = np.where((np.sum(data, axis=1) > min_tp) &
                                     (np.count_nonzero(data, axis=1) >= min_genes_per_cell))[0]
             
-            self._raw = pd.DataFrame(data[self.normal_cells][:, self.normal_genes])
+            self._raw = data[self.normal_cells][:, self.normal_genes]
 
             self.min_tp = min_tp
             self.min_cells_per_gene = min_cells_per_gene
@@ -111,31 +111,33 @@ class scLENS():
             
             print(f'Removed {data.shape[0] - len(self.normal_cells)} cells and {data.shape[1] - len(self.normal_genes)} genes in QC')
         
-        X = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
+        X = torch.tensor(self._raw).to(self.device, dtype=torch.double)
         
         # L1 and log normalization
-        self.l1_norm = torch.linalg.vector_norm(X, ord=1, dim=1)
-        X = X / self.l1_norm.unsqueeze(1)
+        l1_norm = torch.linalg.vector_norm(X, ord=1, dim=1)
+        X = X / l1_norm.unsqueeze(1)
         X = torch.log(1 + X)
 
         # Z-score normalization
-        self.mean = torch.mean(X, dim=0)
-        self.std = torch.std(X, dim=0)
-        X = (X - self.mean) / self.std
+        mean = torch.mean(X, dim=0)
+        std = torch.std(X, dim=0)
+        X = (X - mean) / std
 
         # L2 normalization
-        self.l2_norm = torch.linalg.vector_norm(X, ord=2, dim=1)
-        X = X / self.l2_norm.unsqueeze(1) * torch.mean(self.l2_norm)
+        l2_norm = torch.linalg.vector_norm(X, ord=2, dim=1)
+        X = X / l2_norm.unsqueeze(1) * torch.mean(l2_norm)
         X = X - torch.mean(X, dim=0)
 
-        self.X = X
+        self.X = X.cpu().numpy()
         self.preprocessed = True
 
         if plot:
             self.plot_preprocessing()
         
+        del X, l1_norm, l2_norm, mean, std
         torch.cuda.empty_cache()
-        return pd.DataFrame(X.cpu().numpy())
+
+        return pd.DataFrame(self.X)
     
     def _preprocess_rand(self, X):
         """Preprocessing that does not save data statistics"""
@@ -150,6 +152,10 @@ class scLENS():
         l2_norm = torch.linalg.vector_norm(X, ord=2, dim=1)
         X = X /l2_norm.unsqueeze(1) * torch.mean(l2_norm)
         X = X - torch.mean(X, dim=0)
+
+        del l1_norm, l2_norm, mean, std
+        torch.cuda.empty_cache()
+
         return X
 
     def fit_transform(self, data=None, plot_mp=False):
@@ -170,22 +176,25 @@ class scLENS():
         if data is None and not self.preprocessed:
             raise Exception('No data has been provided. Provide data directly or through the preprocess function')
         if not self.preprocessed:
-            self._raw = data
             if isinstance(data, pd.DataFrame):
-                self.X = torch.tensor(data.values).to(self.device, dtype=torch.double)
+                self._raw = data.values
+                self.X = data.values
             else:
-                self.X = torch.tensor(data).to(self.device, dtype=torch.double)
+                self._raw = data
+                self.X = data
+
+        X = torch.tensor(self.X).to(self.device, dtype=torch.double)
         
-        pca_result = self._PCA(self.X, plot_mp=plot_mp)
+        pca_result = self._PCA(X, plot_mp=plot_mp)
         self._signal_components = torch.tensor(pca_result[1]).to(self.device, dtype=torch.double)
 
         if self.sparsity == 'auto':
             self._calculate_sparsity()
         
         if self.preprocessed:
-            raw = torch.tensor(self._raw.values).to(self.device, dtype=torch.double)
+            raw = torch.tensor(self._raw).to(self.device, dtype=torch.double)
 
-        n = min(self._signal_components.shape[1] * self._perturbed_n_scale, self.X.shape[1])
+        n = min(self._signal_components.shape[1] * self._perturbed_n_scale, X.shape[1])
 
         pert_vecs = list()
         for _ in tqdm(range(self.n_rand_matrix), total=self.n_rand_matrix):
@@ -200,6 +209,9 @@ class scLENS():
             rand = self._preprocess_rand(raw + rand)
             perturbed = self._PCA_rand(rand, n)
             pert_vecs.append(perturbed)
+
+            del rand
+            torch.cuda.empty_cache()
 
         # Select the most correlated components for each perturbation
         pert_select = [torch.argmax(torch.abs( \
@@ -222,7 +234,7 @@ class scLENS():
         self.X_transform = pca_result[1][:, self._robust_idx] * np.sqrt(pca_result[0][self._robust_idx]).reshape(1, -1)
         self.robust_scores = pert_scores
 
-        del raw, pert_scores, pert_vecs, pert_select, rand
+        del raw, pert_scores, pert_vecs, pert_select
         torch.cuda.empty_cache()
 
         return self.X_transform
@@ -230,7 +242,7 @@ class scLENS():
     def _calculate_sparsity(self):
         """Automatic sparsity level calculation"""
         sparse = 0.999
-        zero_idx = np.nonzero(self._raw.values == 0)
+        zero_idx = np.nonzero(self._raw == 0)
         n_len = self.X.shape[0]*self.X.shape[1]
         n_zero = zero_idx[0].shape[0]
         
@@ -242,7 +254,7 @@ class scLENS():
         print(f'sparsity_th: {thresh}')
 
         # Construct binarized data matrix
-        bin = scipy.sparse.csr_array(self._raw.values)
+        bin = scipy.sparse.csr_array(self._raw)
         bin.data[:] = 1
         bin = torch.tensor(bin.toarray()).to(self.device)
         Vb = self._PCA_rand(self._preprocess_rand(bin), bin.shape[0])
@@ -265,7 +277,6 @@ class scLENS():
 
             # Calculate correlation between perturbed and original data
             corr_arr = torch.max(torch.abs(torch.transpose(Vb, 0, 1) @ Vbp), dim=0).values.cpu().numpy()
-            # corr = min(corr_arr[corr_arr > 1e-3])
             corr = np.sort(corr_arr)[1]
 
             buffer.pop(0)
@@ -292,6 +303,7 @@ class scLENS():
 
         del pca
         torch.cuda.empty_cache()
+
         return comp
     
     def _PCA_rand(self, X, n):
@@ -330,8 +342,7 @@ class scLENS():
         plt.title('Signal Component Robustness')
         plt.show()
 
-    def cluster(self, 
-                X,
+    def cluster(self,
                 res=None,
                 method='chooseR',
                 n_neighbors=20, 
@@ -341,36 +352,32 @@ class scLENS():
         """"""
         from .cluster_utils import find_clusters
 
-        X_transform = self.transform(X)
-
         if res is not None:
             self.resolution = res
         elif method == 'chooseR':
             from .clustering import chooseR
 
-            self.resolution = chooseR(X_transform, **kwargs)
+            self.resolution = chooseR(self.X_transform, **kwargs)
         elif method == 'multiK':
             from .clustering import multiK
-
-            self.resolution = multiK(X_transform, **kwargs)
+            
+            if self.device == torch.device('cpu'):
+                device = 'cpu'
+            else:
+                device = 'gpu'
+            # self.resolution = multiK(X_transform, **kwargs)
+            return multiK(self.X_transform, device=device, **kwargs)
         elif method == 'scSHC':
             from .clustering import scSHC
             
-            if isinstance(X, pd.DataFrame):
-                normal_cells = np.where((np.sum(X.values, axis=1) > self.min_tp) &
-                                (np.count_nonzero(X.values, axis=1) >= self.min_genes_per_cell))[0]
-                X_clean = X.iloc[normal_cells, self.normal_genes].values
-            else:
-                normal_cells = np.where((np.sum(X, axis=1) > self.min_tp) &
-                                (np.count_nonzero(X, axis=1) >= self.min_genes_per_cell))[0]
-                X_clean = X[normal_cells, self.normal_genes]
+            X_clean = self._raw[self.normal_cells, self.normal_genes]
 
-            cluster = scSHC(X_clean, X_transform, **kwargs)
+            cluster = scSHC(X_clean, self.X_transform, **kwargs)
             return cluster
         else:
             raise Exception('Method not recognized')
         
-        cluster = find_clusters(X_transform, 
+        cluster = find_clusters(self.X_transform, 
                                 n_neighbors=n_neighbors, 
                                 min_weight=min_weight, 
                                 res=self.resolution, 
