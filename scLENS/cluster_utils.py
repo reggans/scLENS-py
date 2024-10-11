@@ -146,11 +146,13 @@ def calculate_score_gpu(clusters, n, reps):
     for row in clusters:
         x_device = cuda.to_device(row)
         outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_device, score_device)
+        del x_device
+        cuda.current_context().memory_manager.deallocations.clear()
     
     score = score_device.copy_to_host()
     score = np.where(score.real > 0, percent_match(score, reps), 0)
     
-    del score_device, x_device
+    del score_device
     cuda.current_context().memory_manager.deallocations.clear()
     return score
 

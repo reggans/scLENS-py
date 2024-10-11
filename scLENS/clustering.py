@@ -59,14 +59,15 @@ def chooseR(X,
         stats_row = [res]
         cls = find_clusters(X, res=res)
         stats_row.append(len(np.unique(cls)))
-
+        
+        print('Sample construction')
         clusters = construct_sample_clusters(X, 
                                              reps=reps, 
                                              size=size, 
                                              res=res, 
                                              n_jobs=n_jobs, 
                                              disable=True)
-
+        print('Scoring')
         score = calculate_score(clusters, X.shape[0], reps, device=device)
         
         score = 1 - score

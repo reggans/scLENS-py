@@ -46,11 +46,12 @@ class PCA(randomly.Rm):
         """Dispatch to the right submethod depending on
            the chosen solver"""
         if self.eigen_solver == 'wishart':
-            Y = self._wishart_matrix(X)
-            (self.L, self.V) = self._get_eigen(Y)
+            (self.L, self.V) = self._get_eigen(X)
             Xr = self._random_matrix(X)
-            Yr = self._wishart_matrix(Xr)
-            (self.Lr, self.Vr) = self._get_eigen(Yr)
+            (self.Lr, self.Vr) = self._get_eigen(Xr)
+
+            del Xr
+            torch.cuda.empty_cache()
 
             self.explained_variance_ = (self.L**2) / (self.n_cells)
             self.total_variance_ = self.explained_variance_.sum()
@@ -58,9 +59,6 @@ class PCA(randomly.Rm):
             self.L_mp = self._mp_calculation(self.L, self.Lr)
             self.lambda_c = self._tw()
             self.peak = self._mp_parameters(self.L_mp)['peak']
-
-            del Y, Xr, Yr
-            torch.cuda.empty_cache()
         else:
             print('''Solver is undefined, please use
                      Wishart Matrix as eigenvalue solver''')
@@ -96,7 +94,9 @@ class PCA(randomly.Rm):
     
     def _wishart_matrix(self, X):
         """Compute Wishart Matrix of the cells"""
-        Y = (X @ torch.transpose(X, 0, 1)) / X.shape[1]
+        Y = (X @ torch.transpose(X, 0, 1))
+        Y.div_(X.shape[1])
+
         torch.cuda.empty_cache()
         return Y
     
@@ -104,14 +104,18 @@ class PCA(randomly.Rm):
         Xr = torch.stack([
             row[torch.randperm(row.shape[0])] for row in torch.unbind(X, dim=0)
         ], dim=0)
+        
         torch.cuda.empty_cache()
         return Xr
 
-    def _get_eigen(self, Y):
+    def _get_eigen(self, X):
         """Compute Eigenvalues of the real symmetric matrix"""
+        Y = self._wishart_matrix(X)
         (L, V) = torch.linalg.eigh(Y)
         L = L.cpu().numpy()
         V = V.cpu().numpy()
+
+        del Y
         torch.cuda.empty_cache()
         return (L, V)
     
