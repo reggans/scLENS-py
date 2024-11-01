@@ -140,8 +140,11 @@ class scLENS():
 
         return pd.DataFrame(self.X)
     
-    def _preprocess_rand(self, X):
+    def _preprocess_rand(self, X, inplace=True):
         """Preprocessing that does not save data statistics"""
+        if not inplace:
+            X = X.clone()
+
         l1_norm = torch.linalg.vector_norm(X, ord=1, dim=1)
         X.div_(l1_norm.unsqueeze(1))
         X.add_(1)
@@ -262,7 +265,7 @@ class scLENS():
         bin = scipy.sparse.csr_array(self._raw)
         bin.data[:] = 1
         bin = torch.tensor(bin.toarray()).to(self.device)
-        Vb = self._PCA_rand(self._preprocess_rand(bin), bin.shape[0]).cpu()
+        Vb = self._PCA_rand(self._preprocess_rand(bin, inplace=False), bin.shape[0]).cpu()
         n_vbp = Vb.shape[1]//2
 
         n_buffer = 5
@@ -384,7 +387,7 @@ class scLENS():
         elif method == 'scSHC':
             from .clustering import scSHC
             
-            X_clean = self._raw[self.normal_cells, self.normal_genes]
+            X_clean = self._raw
 
             cluster = scSHC(X_clean, self.X_transform, **kwargs)
             return cluster

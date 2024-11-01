@@ -100,18 +100,26 @@ def construct_sample_clusters(X,
     Creates clusterings based on a subset of the dataset
     """
     k = int(X.shape[0] * size)
-
-    with tqdm_joblib(desc='Constructing samples', total=reps, **kwargs):
-        parallel = Parallel(n_jobs=n_jobs)
-        clusters = parallel(sample_cluster(X, k=k, res=res, filler=filler) for _ in range(reps))
+    if reps is None: # MultiK; use same sample for all resolutions
+        with tqdm_joblib(desc='Constructing samples', total=len(res), **kwargs):
+            parallel = Parallel(n_jobs=n_jobs)
+            clusters = parallel(sample_cluster(X, k=k, res=res[i], filler=filler, sample=False) for i in range(len(res)))
+    else: # ChooseR; use same resolution for all samples
+        with tqdm_joblib(desc='Constructing samples', total=reps, **kwargs):
+            parallel = Parallel(n_jobs=n_jobs)
+            clusters = parallel(sample_cluster(X, k=k, res=res, filler=filler) for _ in range(reps))
     return clusters
 
 @delayed
 @wrap_non_picklable_objects
-def sample_cluster(X, k, res=1.2, filler=-1):
+def sample_cluster(X, k, res=1.2, filler=-1, sample=True):
     """
     Sample and cluster data
     """
+    if not sample:
+        cls = find_clusters(X, res=res)
+        return cls
+    
     row = np.zeros(X.shape[0])
     row.fill(filler)
     sample = random.sample(range(X.shape[0]), k)

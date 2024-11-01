@@ -14,6 +14,7 @@ from .cluster_utils import find_clusters, construct_sample_clusters, calculate_s
     group_silhouette, calculate_one_minus_rpac, Dendrogram, test_significance
 
 from collections import Counter
+import random
 
 def chooseR(X,
             reps=100,
@@ -60,14 +61,12 @@ def chooseR(X,
         cls = find_clusters(X, res=res)
         stats_row.append(len(np.unique(cls)))
         
-        print('Sample construction')
         clusters = construct_sample_clusters(X, 
                                              reps=reps, 
                                              size=size, 
                                              res=res, 
                                              n_jobs=n_jobs, 
                                              disable=True)
-        print('Scoring')
         score = calculate_score(clusters, X.shape[0], reps, device=device)
         
         score = 1 - score
@@ -141,20 +140,23 @@ def multiK(X,
     clusters = np.zeros((n, X.shape[0]))
     ks = np.zeros(n)
 
-    for i, res in tqdm(enumerate(resolutions), 
-                       desc='MultiK', 
-                       total=len(resolutions), 
-                       disable=silent):
-        offset = reps * i
-        sample_cls = construct_sample_clusters(X,
-                                               reps=reps, 
+    for i in tqdm(range(reps)):
+        offset = i * len(resolutions)
+        k = int(X.shape[0] * size)
+        sample = random.sample(range(X.shape[0]), k)
+
+        sample_cls = construct_sample_clusters(X[sample],
+                                               reps=None, 
                                                size=size, 
-                                               res=res, 
+                                               res=resolutions, 
                                                n_jobs=n_jobs,
                                                disable=True)
+
+        full_cls = np.zeros((len(resolutions), X.shape[0])) - 1
+        full_cls[:, sample] = sample_cls
         
-        clusters[offset:offset+reps] = sample_cls
-        ks[offset:offset+reps] = [len(np.unique(cls)) - 1 for cls in sample_cls] # accomodate for label of dropped data
+        clusters[offset:offset+len(resolutions)] = full_cls
+        ks[offset:offset+len(resolutions)] = [len(np.unique(cls)) - 1 for cls in full_cls] # accomodate for label of dropped data
     
     k_runs = [x[1] for x in sorted(Counter(ks).items())]
     k_unique = np.unique(ks)
@@ -189,11 +191,11 @@ def multiK(X,
         opt_points = np.concatenate([hull_points[:best_run + 1], hull_points[best_rpac:]])
         opt_k = np.concatenate([hull_k[:best_run + 1], hull_k[best_rpac:]])
 
-    # plt.plot(points[:, 0], points[:, 1], 'ko')
-    # plt.plot(opt_points[:, 0], opt_points[:, 1], 'ro')
-    # for i, k in enumerate(opt_k):
-    #     plt.annotate(str(k), (opt_points[i, 0], opt_points[i, 1]))
-    # plt.show()
+    plt.plot(points[:, 0], points[:, 1], 'ko')
+    plt.plot(opt_points[:, 0], opt_points[:, 1], 'ro')
+    for i, k in enumerate(opt_k):
+        plt.annotate(str(k), (opt_points[i, 0], opt_points[i, 1]))
+    plt.show()
 
     result = list()
     for k in opt_k:
