@@ -383,7 +383,7 @@ class scLENS():
             else:
                 device = 'gpu'
             # self.resolution = multiK(X_transform, **kwargs)
-            return multiK(self.X_transform, device=device, **kwargs)
+            return multiK(self._raw, device=device, **kwargs)
         elif method == 'scSHC':
             from .clustering import scSHC
             

@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 import scipy
+import torch
 from scipy.cluster.hierarchy import linkage
 from sklearn.metrics import silhouette_samples
 from resample.bootstrap import confidence_interval
@@ -11,7 +12,8 @@ from tqdm.auto import tqdm
 from tqdm_joblib import tqdm_joblib
 
 from .cluster_utils import find_clusters, construct_sample_clusters, calculate_score, \
-    group_silhouette, calculate_one_minus_rpac, Dendrogram, test_significance
+    group_silhouette, calculate_one_minus_rpac, Dendrogram, test_significance, truncated_sclens
+from .scLENS import scLENS
 
 from collections import Counter
 import random
@@ -22,7 +24,8 @@ def chooseR(X,
             resolutions=None,
             device='gpu',
             n_jobs=None,
-            silent=False):
+            silent=False,
+            metric='cosine'):
     """
     Chooses the best resolution from a set of possible resolutions
     by repeatedly subsampling and clustering the data,
@@ -58,15 +61,16 @@ def chooseR(X,
                     total=len(resolutions), 
                     disable=silent):
         stats_row = [res]
-        cls = find_clusters(X, res=res)
+        cls = find_clusters(X, res=res,metric=metric)
         stats_row.append(len(np.unique(cls)))
         
         clusters = construct_sample_clusters(X, 
-                                             reps=reps, 
-                                             size=size, 
-                                             res=res, 
-                                             n_jobs=n_jobs, 
-                                             disable=True)
+                                            reps=reps, 
+                                            size=size, 
+                                            res=res, 
+                                            n_jobs=n_jobs,
+                                            metric=metric, 
+                                            disable=True)
         score = calculate_score(clusters, X.shape[0], reps, device=device)
         
         score = 1 - score
@@ -80,13 +84,14 @@ def chooseR(X,
 
         stats.append(stats_row)
     
-    stats = pd.DataFrame(stats, columns=['res', 'n_clusters', 'low_med', 'med']).sort_values(by=['n_clusters'])
+    stats = pd.DataFrame(stats, columns=['res', 'n_clusters', 'low_med', 'med']).sort_values(by=['n_clusters'], ascending=False)
     threshold = max(stats['low_med'])
-    stats = stats[stats['med'] >= threshold]
+    filtered_stats = stats[stats['med'] >= threshold]
 
-    if len(stats) == 1:
-        return stats['res']
-    return stats['res'].iloc[0]
+
+    if len(filtered_stats) == 1:
+        return filtered_stats['res']
+    return filtered_stats['res'].iloc[0]
 
 
 def multiK(X,
@@ -94,7 +99,9 @@ def multiK(X,
            reps=100,
            size=0.8,
            x1=0.1, x2=0.9,
-           metric=None,
+           metric='cosine',
+           reduce_func=None,
+           nPC=None,
            device='gpu',
            n_jobs=None,
            silent=False,
@@ -120,7 +127,7 @@ def multiK(X,
     x2: float
         Argument for evaluating rPAC. Must be between 0 and 1
     metric: function or None,
-        Metric to choose the final resolution parameter
+        **
     device: One of ['cpu', 'gpu']
         Device to run the scoring on. 'cpu' will run scoring on CPU with n_jobs parallel jobs
     n_jobs: int or None
@@ -131,6 +138,11 @@ def multiK(X,
     float
         The chosen best resolution
     """
+    if reduce_func is not None and nPC is None:
+        raise ValueError('nPC must be specified when using a custom reduce_func')
+    if nPC is not None and reduce_func is None:
+        raise ValueError('reduce_func must be specified when using a custom nPC')
+    
     if resolutions is None:
         resolutions = np.arange(0.05, 2, 0.05)
     else:
@@ -145,11 +157,24 @@ def multiK(X,
         k = int(X.shape[0] * size)
         sample = random.sample(range(X.shape[0]), k)
 
-        sample_cls = construct_sample_clusters(X[sample],
+        X_sample = X[sample]
+        if reduce_func is not None:
+            X_sample = reduce_func(X_sample, nPC)
+        else:
+            if nPC is not None:
+                X_sample = truncated_sclens(X_sample, nPC)
+            else:
+                scl = scLENS(device=torch.device('cuda') if device == 'gpu' else torch.device('cpu'))
+                scl.preprocess(X_sample)
+                X_sample = scl.fit_transform()
+                nPC = X_sample.shape[1]
+
+        sample_cls = construct_sample_clusters(X_sample,
                                                reps=None, 
                                                size=size, 
                                                res=resolutions, 
                                                n_jobs=n_jobs,
+                                               metric=metric,
                                                disable=True)
 
         full_cls = np.zeros((len(resolutions), X.shape[0])) - 1

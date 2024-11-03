@@ -5,7 +5,7 @@ import scipy
 import igraph as ig
 import leidenalg as la
 from sklearn.neighbors import kneighbors_graph
-from sklearn.metrics.pairwise import cosine_distances
+from sklearn.metrics.pairwise import cosine_distances, euclidean_distances
 from scipy.stats import norm
 from scipy.cluster.hierarchy import linkage
 
@@ -95,6 +95,7 @@ def construct_sample_clusters(X,
                               size=0.8,
                               res=1.2,
                               n_jobs=None,
+                              metric='cosine',
                               **kwargs):
     """
     Creates clusterings based on a subset of the dataset
@@ -103,27 +104,27 @@ def construct_sample_clusters(X,
     if reps is None: # MultiK; use same sample for all resolutions
         with tqdm_joblib(desc='Constructing samples', total=len(res), **kwargs):
             parallel = Parallel(n_jobs=n_jobs)
-            clusters = parallel(sample_cluster(X, k=k, res=res[i], filler=filler, sample=False) for i in range(len(res)))
+            clusters = parallel(sample_cluster(X, k=k, res=res[i], filler=filler, sample=False, metric=metric) for i in range(len(res)))
     else: # ChooseR; use same resolution for all samples
         with tqdm_joblib(desc='Constructing samples', total=reps, **kwargs):
             parallel = Parallel(n_jobs=n_jobs)
-            clusters = parallel(sample_cluster(X, k=k, res=res, filler=filler) for _ in range(reps))
+            clusters = parallel(sample_cluster(X, k=k, res=res, filler=filler, metric=metric) for _ in range(reps))
     return clusters
 
 @delayed
 @wrap_non_picklable_objects
-def sample_cluster(X, k, res=1.2, filler=-1, sample=True):
+def sample_cluster(X, k, res=1.2, filler=-1, sample=True, metric='cosine'):
     """
     Sample and cluster data
     """
     if not sample:
-        cls = find_clusters(X, res=res)
+        cls = find_clusters(X, res=res, metric=metric)
         return cls
     
     row = np.zeros(X.shape[0])
     row.fill(filler)
     sample = random.sample(range(X.shape[0]), k)
-    cls = find_clusters(X[sample], res=res)
+    cls = find_clusters(X[sample], res=res, metric=metric)
     np.put(row, sample, cls)
     return row
 
@@ -337,7 +338,7 @@ class Dendrogram():
         idx = root - self.n_samples
         return self.linkage[idx][2] 
 
-def ward_linkage(X, labels):
+def ward_linkage(X, labels,metric='cosine'):
     # ess1 = calculate_ess(X[labels==0])
     # ess2 = calculate_ess(X[labels==1])
     # ess = calculate_ess(X)
@@ -346,11 +347,14 @@ def ward_linkage(X, labels):
     n2 = np.sum(labels == 1)
     mean1 = np.mean(X[labels==0], 0)
     mean2 = np.mean(X[labels==1], 0)
-    dist = cosine_distances(mean1.reshape(1, -1), mean2.reshape(1, -1)).item()
+    if metric == 'cosine':
+        dist = cosine_distances(mean1.reshape(1, -1), mean2.reshape(1, -1)).item()
+    else:
+        dist = euclidean_distances(mean1.reshape(1, -1), mean2.reshape(1, -1)).item()
     return np.sqrt(2 * n1 * n2 / (n1 + n2)) * dist
 
-def calculate_ess(X):
-    return np.sum(cosine_distances(X, np.mean(X, 0).reshape(1, -1)))
+# def calculate_ess(X):
+#     return np.sum(cosine_distances(X, np.mean(X, 0).reshape(1, -1)))
 
 def poisson_dispersion_stats(X):
     n = np.sum(X, 1)
@@ -393,7 +397,7 @@ def fit_model(X, on_genes, nPC):
 
     return np.mean(X, 0), mus, on_cov_sqrt 
 
-def generate_null_stats(X, params, on_genes, nPC):
+def generate_null_stats(X, params, on_genes, nPC, metric):
     lambdas = params[0].astype(np.float64)
     on_means = params[1].astype(np.float64)
     on_cov_sqrt = params[2].astype(np.float64)
@@ -413,16 +417,20 @@ def generate_null_stats(X, params, on_genes, nPC):
     
     null = null[np.sum(null, 1) > 0][:, np.sum(null, 0) > 0]
     null_gm = truncated_sclens(null, nPC)
-    dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
+    if metric == 'cosine':
+        dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
+    elif metric == 'euclidean':
+        dist = scipy.spatial.distance.pdist(null_gm, 'euclidean')
+
     hc = Dendrogram(linkage(dist, method='ward'))
     # qual = hc.get_score(hc.root)
     leaves = np.array(hc.get_subtree_leaves(hc.root))
     leaf_idx = leaves[:, 0]
     leaf_labels = leaves[:, 1]
-    qual = ward_linkage(null_gm[leaf_idx], leaf_labels)
+    qual = ward_linkage(null_gm[leaf_idx], leaf_labels, metric=metric)
     return qual
 
-def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
+def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None, metric='cosine'):
     if X.shape[0] < 2:
         return 1
     
@@ -430,7 +438,7 @@ def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
     
     X_transform = truncated_sclens(X, nPC)
 
-    score = ward_linkage(X_transform, labels)
+    score = ward_linkage(X_transform, labels, metric=metric)
 
     phi_stat = poisson_dispersion_stats(X)
     check_means = np.sum(X, 0)
@@ -440,7 +448,7 @@ def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
 
     pool = list()
     parallel = Parallel(n_jobs=n_jobs)
-    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC) for _ in range(10)))
+    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC, metric) for _ in range(10)))
     
     mean, std = norm.fit(pool)
     pval = norm.sf(score, loc=mean, scale=std)
@@ -448,7 +456,7 @@ def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None):
         print('Mean:', mean, 'Std:', std, 'Score:', score)
         return pval
     
-    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC) for _ in range(40)))
+    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC, metric) for _ in range(40)))
     
     mean, std = norm.fit(pool)
     pval = norm.sf(score, loc=mean, scale=std)
