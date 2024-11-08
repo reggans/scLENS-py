@@ -6,13 +6,15 @@ from scipy.cluster.hierarchy import linkage
 from sklearn.metrics import silhouette_samples
 from resample.bootstrap import confidence_interval
 from joblib import Parallel
+import contextlib
+import io
 
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
 from tqdm_joblib import tqdm_joblib
 
 from .cluster_utils import find_clusters, construct_sample_clusters, calculate_score, \
-    group_silhouette, calculate_one_minus_rpac, Dendrogram, test_significance, truncated_sclens
+    group_silhouette, calculate_one_minus_rpac, Dendrogram, test_significance, truncated_sclens, seurat_preprocessing
 from .scLENS import scLENS
 
 from collections import Counter
@@ -53,7 +55,8 @@ def chooseR(X,
         The chosen best resolution
     """
     if resolutions is None:
-        resolutions = [0.3, 0.5, 0.8, 1, 1.2, 1.6, 2, 4, 6, 8]
+        # resolutions = [0.3, 0.5, 0.8, 1, 1.2, 1.6, 2, 4, 6, 8]
+        resolutions = np.arange(0.05, 2, 0.05)
     resolutions = set(resolutions)
     stats = list()
     for res in tqdm(resolutions,
@@ -90,8 +93,8 @@ def chooseR(X,
 
 
     if len(filtered_stats) == 1:
-        return filtered_stats['res']
-    return filtered_stats['res'].iloc[0]
+        return filtered_stats['res'], stats
+    return filtered_stats['res'].iloc[0], stats
 
 
 def multiK(X,
@@ -104,6 +107,7 @@ def multiK(X,
            nPC=None,
            device='gpu',
            n_jobs=None,
+           old_preprocessing=False,
            silent=False,
            **kwargs):
     """
@@ -151,7 +155,7 @@ def multiK(X,
     n = len(resolutions) * reps
     clusters = np.zeros((n, X.shape[0]))
     ks = np.zeros(n)
-
+    f = io.StringIO()
     for i in tqdm(range(reps)):
         offset = i * len(resolutions)
         k = int(X.shape[0] * size)
@@ -162,12 +166,21 @@ def multiK(X,
             X_sample = reduce_func(X_sample, nPC)
         else:
             if nPC is not None:
-                X_sample = truncated_sclens(X_sample, nPC)
+                if old_preprocessing:
+                    X_sample = truncated_sclens(seurat_preprocessing(X_sample), nPC)
+                else:
+                    with contextlib.redirect_stdout(f):
+                        scl.preprocess(X_sample)
+                    X_sample = truncated_sclens(scl.X, nPC)
             else:
-                scl = scLENS(device=torch.device('cuda') if device == 'gpu' else torch.device('cpu'))
-                scl.preprocess(X_sample)
-                X_sample = scl.fit_transform()
-                nPC = X_sample.shape[1]
+                if old_preprocessing:
+                    nPC = 30
+                    X_sample = truncated_sclens(seurat_preprocessing(X_sample), nPC)
+                else:
+                    scl = scLENS(device=torch.device('cuda') if device == 'gpu' else torch.device('cpu'))
+                    scl.preprocess(X_sample)
+                    X_sample = scl.fit_transform()
+                    nPC = X_sample.shape[1]
 
         sample_cls = construct_sample_clusters(X_sample,
                                                reps=None, 
@@ -220,6 +233,8 @@ def multiK(X,
     plt.plot(opt_points[:, 0], opt_points[:, 1], 'ro')
     for i, k in enumerate(opt_k):
         plt.annotate(str(k), (opt_points[i, 0], opt_points[i, 1]))
+    plt.xlabel("1-rPAC")
+    plt.ylabel("Number of clustering runs")
     plt.show()
 
     result = list()
@@ -254,6 +269,7 @@ def scSHC(X,
           X_transform,
           alpha=0.05,
           device=None,
+          metric='cosine',
           n_jobs=None):
     """
     Daniel Müllner, fastcluster: Fast Hierarchical, 
@@ -262,7 +278,7 @@ def scSHC(X,
     https://doi.org/10.18637/jss.v053.i09.
     """
     nPC = X_transform.shape[1]
-    dist = scipy.spatial.distance.pdist(X_transform, 'cosine')
+    dist = scipy.spatial.distance.pdist(X_transform, metric)
     dend = Dendrogram(linkage(dist, method='ward'))
     test_queue = [dend.root]
     clustering = np.zeros(X.shape[0]) - 1 # -1 for unassigned cluster
@@ -287,7 +303,7 @@ def scSHC(X,
         if min(n_cluster1, n_cluster0) < 20:
             sig = 1
         else:
-            sig = test_significance(X_test, label_test, nPC, score, alpha_level, n_jobs)
+            sig = test_significance(X_test, label_test, nPC, score, alpha_level, n_jobs, metric=metric)
 
         if (sig < alpha_level):
             test_queue.extend(dend.get_children(test))

@@ -8,6 +8,7 @@ from sklearn.neighbors import kneighbors_graph
 from sklearn.metrics.pairwise import cosine_distances, euclidean_distances
 from scipy.stats import norm
 from scipy.cluster.hierarchy import linkage
+from sklearn.decomposition import TruncatedSVD
 
 from numba import cuda
 from joblib import Parallel, delayed, wrap_non_picklable_objects
@@ -16,6 +17,8 @@ from tqdm_joblib import tqdm_joblib
 from .scLENS import scLENS
 
 import random, math
+
+import scanpy as scpy
 
 # -----------------------GENERAL FUNCTIONS-----------------------
 
@@ -480,7 +483,17 @@ def preprocess(X):
     return X
 
 def truncated_sclens(X, nPC):
-    X = preprocess(X)
-    _, vecs = np.linalg.eigh(X @ X.T / X.shape[1])
-    vecs = vecs[:, -nPC:]
-    return X @ X.T @ vecs
+    # X = preprocess(X)
+    svd = TruncatedSVD(n_components=nPC, n_iter=7)
+    return svd.fit_transform(X)
+
+def seurat_preprocessing(X):
+    adata = scpy.AnnData(X=X,dtype=np.float64)
+    scpy.pp.normalize_total(adata,target_sum = 10000)
+    scpy.pp.log1p(adata)
+    
+    scpy.pp.highly_variable_genes(adata,n_top_genes=2000,flavor='seurat')
+    adata.raw = adata
+    adata = adata[:,adata.var.highly_variable]
+    scpy.pp.scale(adata)
+    return adata.X

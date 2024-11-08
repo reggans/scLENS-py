@@ -263,8 +263,8 @@ class scLENS():
 
         # Construct binarized data matrix
         bin = scipy.sparse.csr_array(self._raw)
-        bin.data[:] = 1
-        bin = torch.tensor(bin.toarray()).to(self.device)
+        bin.data[:] = 1.
+        bin = torch.tensor(bin.toarray()).to(self.device,dtype=torch.double)
         Vb = self._PCA_rand(self._preprocess_rand(bin, inplace=False), bin.shape[0]).cpu()
         n_vbp = Vb.shape[1]//2
 
