@@ -28,6 +28,7 @@ def chooseR(X,
             device='gpu',
             n_jobs=None,
             silent=False,
+            batch_size = 20,
             metric='cosine'):
     """
     Chooses the best resolution from a set of possible resolutions
@@ -73,7 +74,8 @@ def chooseR(X,
                                             size=size, 
                                             res=res, 
                                             n_jobs=n_jobs,
-                                            metric=metric, 
+                                            metric=metric,
+                                            batch_size=batch_size,
                                             disable=True)
         score = calculate_score(clusters, X.shape[0], reps, device=device)
         
@@ -109,6 +111,7 @@ def multiK(X,
            device='gpu',
            n_jobs=None,
            old_preprocessing=False,
+           batch_size=20,
            silent=False,
            **kwargs):
     """
@@ -189,6 +192,7 @@ def multiK(X,
                                                res=resolutions, 
                                                n_jobs=n_jobs,
                                                metric=metric,
+                                               batch_size=batch_size,
                                                disable=True)
 
         full_cls = np.zeros((len(resolutions), X.shape[0])) - 1

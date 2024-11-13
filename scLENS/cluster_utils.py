@@ -4,7 +4,6 @@ import scipy.spatial
 import scipy
 import igraph as ig
 import leidenalg as la
-from sklearn.neighbors import kneighbors_graph
 from sklearn.metrics.pairwise import cosine_distances, euclidean_distances
 from scipy.stats import norm
 from scipy.cluster.hierarchy import linkage, fcluster
@@ -14,6 +13,7 @@ from sklearn.decomposition import TruncatedSVD
 
 from numba import cuda
 from joblib import Parallel, delayed, wrap_non_picklable_objects
+from tqdm import tqdm
 from tqdm_joblib import tqdm_joblib
 
 from .scLENS import scLENS
@@ -21,66 +21,40 @@ from .scLENS import scLENS
 import random, math
 
 import scanpy as scpy
+from sklearn.neighbors import NearestNeighbors
 
 # -----------------------GENERAL FUNCTIONS-----------------------
 
 def snn(X, n_neighbors=20, min_weight=1/15, metric='cosine'):
-    graph = kneighbors_graph(X, n_neighbors=n_neighbors, metric=metric).toarray()
-    # graph = torch.tensor(graph).to(device)
+    # graph = kneighbors_graph(X, n_neighbors=n_neighbors, metric=metric)
+    nbrs = NearestNeighbors(n_neighbors=n_neighbors+1, metric=metric).fit(X)
+    indices = nbrs.kneighbors(X,return_distance=False)
+    indices = indices[:, 1:]
+
+    n_samples = indices.shape[0]
+    edges = []
+    for i, neighbors in enumerate(indices):
+        for neighbor in neighbors:
+            edges.append((i,neighbor))
     
-    dist = np.stack([get_snn_distance(graph, node) for node in range(graph.shape[0])])
-
-    dist[dist < min_weight] = 0
-
-    for i, j in np.argwhere(dist):
-        dist[j, i] = dist[i, j]
-
-    return dist
-
-def get_snn_distance(graph, node):
-    row = graph[node]
-    idx = np.nonzero(row)
-    dist = np.zeros_like(row, dtype=np.float32)
-
-    for i in idx:
-        union = graph[i] + row
-        dist[i] = 1 - np.sum(union == 2) / np.count_nonzero(union)
+    g = ig.Graph(n=n_samples,edges=edges,directed=False)
+    weights = np.array(g.similarity_jaccard(pairs=g.get_edgelist()))
+    g.es['weight'] = weights
     
-    return dist.flatten()
+    edges_to_delete = [i for i, w in enumerate(weights) if w < min_weight]
+    g.delete_edges(edges_to_delete)
     
+    return g
+
+
 def find_clusters(X, 
-                  n_neighbors=20, 
-                  min_weight=1/15, 
-                  metric='cosine',
-                  res=1.2,
-                  n_iterations=-1):
-    """
-    Find the clustering of the data using the Leiden algorithm,
-    using SNN to construct graph an calculate weights
-
-    Parameters
-    ----------
-    X: np.ndarray
-        Data to be clustered
-    n_neighbors: int
-        Number of nearest neighbors considered in NN graph
-    min_weight:
-        Minimum weight of the resulting SNN graph
-    res: float
-        Resolution of the Leiden algorithm; Higher values tend to yield more clusters
+                n_neighbors=20, 
+                min_weight=1/15, 
+                metric='cosine',
+                res=1.2,
+                n_iterations=-1):
     
-    Returns
-    -------
-    np.ndarray
-        Array of cluster number of each data point
-    """
-
-    dist = snn(X, 
-               n_neighbors=n_neighbors, 
-               min_weight=min_weight, 
-               metric=metric)
-    
-    G = ig.Graph.Weighted_Adjacency(dist, mode='undirected')
+    G = snn(X, n_neighbors=n_neighbors, min_weight=min_weight, metric=metric)
     partition = la.find_partition(G,
                                   la.RBConfigurationVertexPartition,
                                   weights=G.es['weight'],
@@ -94,6 +68,7 @@ def find_clusters(X,
     
     return labels
 
+
 def construct_sample_clusters(X,
                               filler=-1,
                               reps=100,
@@ -101,23 +76,48 @@ def construct_sample_clusters(X,
                               res=1.2,
                               n_jobs=None,
                               metric='cosine',
+                              batch_size=20,
                               **kwargs):
     """
     Creates clusterings based on a subset of the dataset
     """
     k = int(X.shape[0] * size)
-    if reps is None: # MultiK; use same sample for all resolutions
-        with tqdm_joblib(desc='Constructing samples', total=len(res), **kwargs):
-            parallel = Parallel(n_jobs=n_jobs)
-            clusters = parallel(sample_cluster(X, k=k, res=res[i], filler=filler, sample=False, metric=metric) for i in range(len(res)))
-    else: # ChooseR; use same resolution for all samples
-        with tqdm_joblib(desc='Constructing samples', total=reps, **kwargs):
-            parallel = Parallel(n_jobs=n_jobs)
-            clusters = parallel(sample_cluster(X, k=k, res=res, filler=filler, metric=metric) for _ in range(reps))
+    clusters = []
+
+    if reps is None:
+        if not isinstance(res, (list, tuple, np.ndarray)):
+            res_list = [res]
+        else:
+            res_list = res
+
+        total_tasks = len(res_list)
+        for batch_start in tqdm(range(0, total_tasks, batch_size), desc='Batched Sampling', **kwargs):
+            batch_end = min(batch_start + batch_size, total_tasks)
+            batch_res_list = res_list[batch_start:batch_end]
+
+            with tqdm_joblib(desc='Constructing samples', total=len(batch_res_list), **kwargs):
+                parallel = Parallel(n_jobs=n_jobs)
+                batch_clusters = parallel(
+                    delayed(sample_cluster)(X, k=k, res=res_i, filler=filler, sample=False, metric=metric)
+                    for res_i in batch_res_list
+                )
+            clusters.extend(batch_clusters)
+    else:
+        total_tasks = reps
+        for batch_start in tqdm(range(0, total_tasks, batch_size), desc='Batched Sampling', **kwargs):
+            batch_end = min(batch_start + batch_size, total_tasks)
+            batch_reps = batch_end - batch_start
+
+            with tqdm_joblib(desc='Constructing samples', total=batch_reps, **kwargs):
+                parallel = Parallel(n_jobs=n_jobs)
+                batch_clusters = parallel(
+                    delayed(sample_cluster)(X, k=k, res=res, filler=filler, metric=metric)
+                    for _ in range(batch_reps)
+                )
+            clusters.extend(batch_clusters)
+
     return clusters
 
-@delayed
-@wrap_non_picklable_objects
 def sample_cluster(X, k, res=1.2, filler=-1, sample=True, metric='cosine'):
     """
     Sample and cluster data
@@ -318,7 +318,8 @@ def test_split(X, ids1, ids2, nPC, alpha_level, n_jobs=None, old_preprocessing=F
         parallel = Parallel(n_jobs=n_jobs)
         pool.extend(parallel(delayed(generate_null_stats)(new_X, params, on_genes, nPC=nPC, old_preprocessing=old_preprocessing,sclens_flag=False) for _ in range(9)))
         mean, std = norm.fit(np.array(pool))
-        
+        pval = 1 - norm.cdf(stat, loc=mean, scale=std)
+
         if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
             return pval
         
