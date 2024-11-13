@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import scipy
 import torch
-from scipy.cluster.hierarchy import linkage
+from scipy.cluster.hierarchy import linkage, to_tree
 from sklearn.metrics import silhouette_samples
 from resample.bootstrap import confidence_interval
 from joblib import Parallel
@@ -11,10 +11,11 @@ import io
 
 import matplotlib.pyplot as plt
 from tqdm.auto import tqdm
-from tqdm_joblib import tqdm_joblib
+# from tqdm_joblib import tqdm_joblib
 
 from .cluster_utils import find_clusters, construct_sample_clusters, calculate_score, \
-    group_silhouette, calculate_one_minus_rpac, Dendrogram, test_significance, truncated_sclens, seurat_preprocessing
+    group_silhouette, calculate_one_minus_rpac, truncated_svd, seurat_preprocessing, truncated_pca, \
+    scshc_preprocess, test_split
 from .scLENS import scLENS
 
 from collections import Counter
@@ -167,15 +168,15 @@ def multiK(X,
         else:
             if nPC is not None:
                 if old_preprocessing:
-                    X_sample = truncated_sclens(seurat_preprocessing(X_sample), nPC)
+                    X_sample = truncated_svd(seurat_preprocessing(X_sample), nPC)
                 else:
                     with contextlib.redirect_stdout(f):
                         scl.preprocess(X_sample)
-                    X_sample = truncated_sclens(scl.X, nPC)
+                    X_sample = truncated_svd(scl.X, nPC)
             else:
                 if old_preprocessing:
                     nPC = 30
-                    X_sample = truncated_sclens(seurat_preprocessing(X_sample), nPC)
+                    X_sample = truncated_svd(seurat_preprocessing(X_sample), nPC)
                 else:
                     scl = scLENS(device=torch.device('cuda') if device == 'gpu' else torch.device('cpu'))
                     scl.preprocess(X_sample)
@@ -266,52 +267,104 @@ def multiK(X,
     return result
 
 def scSHC(X,
-          X_transform,
-          alpha=0.05,
-          device=None,
-          metric='cosine',
-          n_jobs=None):
+        nPC=30,
+        alpha=0.05,
+        device="gpu",
+        old_preprocessing=False,
+        n_jobs=None):
     """
     Daniel Müllner, fastcluster: Fast Hierarchical, 
     Agglomerative Clustering Routines for R and Python, 
     Journal of Statistical Software, 53 (2013), no. 9, 1-18,
     https://doi.org/10.18637/jss.v053.i09.
     """
-    nPC = X_transform.shape[1]
-    dist = scipy.spatial.distance.pdist(X_transform, metric)
-    dend = Dendrogram(linkage(dist, method='ward'))
-    test_queue = [dend.root]
-    clustering = np.zeros(X.shape[0]) - 1 # -1 for unassigned cluster
-    cluster_idx = 0
 
-    while(test_queue):
-        test = test_queue.pop()
-        test_leaves = np.array(dend.get_subtree_leaves(test))
-        score = dend.get_score(test)
+    if old_preprocessing:
+        metric='euclidean'
+        X_pre = scshc_preprocess(X)
+        X_trans = truncated_pca(X_pre,nPC)
+    else:
+        metric='cosine'
+        scl = scLENS(device=torch.device('cuda') if device == 'gpu' else torch.device('cpu'))
+        scl.preprocess(X)
+        X_trans = scl.fit_transform()
+        nPC = X_trans.shape[1]
 
-        alpha_level = alpha * ((test_leaves.shape[0] - 1) / (X.shape[0] - 1))
-
-        X_test = X[test_leaves[:, 0]]
-        label_test = test_leaves[:, 1]
-        X_test = X_test[:, np.sum(X_test, 0) > 0]
-
-        n_cluster1 = np.sum(label_test)
-        n_cluster0 = len(label_test) - n_cluster1
-
-        print(f'ClusterID: {test}, Test Shape: {X_test.shape}')
-        
-        if min(n_cluster1, n_cluster0) < 20:
-            sig = 1
-        else:
-            sig = test_significance(X_test, label_test, nPC, score, alpha_level, n_jobs, metric=metric)
-
-        if (sig < alpha_level):
-            test_queue.extend(dend.get_children(test))
-        else:
-            test_idx = [x for (x, _) in test_leaves]
-            clustering[test_idx] = cluster_idx
-            cluster_idx += 1
-
-            print(f'CLUSTER IDENTIFIED; Significance: {sig}, Total clusters: {cluster_idx}')
+    dist = scipy.spatial.distance.pdist(X_trans, metric)
     
-    return clustering
+    if metric=='euclidean':
+        Z = linkage(dist, method='ward')
+    elif metric=='cosine':
+        Z = linkage(dist, method='weighted')
+    
+    tree, nodes = to_tree(Z, rd=True)
+
+    dends_to_test = [tree]  # 분할할 덴드로그램 리스트
+    clusters = []           # 최종 클러스터를 저장할 리스트
+    node0 = None            # 트리의 루트 노드 (시각화를 위해)
+    counter = 0             # 노드 번호 카운터
+    parents = ["root"]      # 부모 노드 추적용 리스트
+    alpha = 0.05            # 유의 수준 (예시 값)
+    
+    # test_queue = [dend.root]
+    # clustering = np.zeros(X.shape[0]) - 1 # -1 for unassigned cluster
+    # cluster_idx = 0
+
+    while len(dends_to_test) > 0:
+        current_node = dends_to_test[0]  # 현재 노드
+        if current_node.is_leaf():
+            clusters.append([current_node.id])
+            dends_to_test.pop(0)
+            continue  # 다음 노드로 이동
+        
+        left = current_node.left
+        right = current_node.right
+        
+        ids1 = left.pre_order(lambda x: x.id)
+        ids2 = right.pre_order(lambda x: x.id)
+        leaves = current_node.pre_order(lambda x: x.id)
+        alpha_level = alpha * ((len(leaves) - 1) / (X.shape[0] - 1))
+
+        # 두 클러스터의 샘플 수 확인
+        size_ids1 = len(ids1)
+        size_ids2 = len(ids2)
+        min_cluster_size = min(size_ids1, size_ids2)
+        
+        if min_cluster_size > 20:
+            # 샘플 수가 충분하면 유의성 검정 수행
+            test = test_split(X, ids1, ids2, nPC, alpha_level, n_jobs=n_jobs, old_preprocessing=old_preprocessing, device=device)
+        else:
+            # 샘플 수가 부족하면 유의성 검정을 수행하지 않고 유의하지 않다고 설정
+            test = 1  # 유의하지 않음
+
+        if test < alpha_level:
+            # 유의미하면 자식 노드를 분할 리스트에 추가
+            dends_to_test.append(left)
+            dends_to_test.append(right)
+            
+            # 노드 정보 업데이트 (필요 시 시각화를 위해)
+            if node0 is None:
+                node0 = f"Node {counter}: p-value {round(test, 4)}"
+            else:
+                print(f"Node {counter}: p-value {round(test, 4)}")
+            
+            parents.append(f"Node {counter}")
+            counter += 1
+        else:
+            # 유의하지 않으면 현재 노드의 잎 노드를 클러스터로 저장
+            clusters.append(leaves)
+            print(f"Cluster {len(clusters)}: p-value {round(test, 4)}")
+        
+        # 처리된 노드를 리스트에서 제거
+        dends_to_test.pop(0)
+    
+
+    cluster_labels = np.zeros(X.shape[0], dtype=int)
+
+    # 각 클러스터에 레이블 할당
+    for i, cluster in enumerate(clusters):
+        for idx in cluster:
+            cluster_labels[idx] = i + 1  # 클러스터 번호는 1부터 시작
+
+    print("최종 클러스터 레이블:", cluster_labels)
+    return cluster_labels

@@ -7,7 +7,9 @@ import leidenalg as la
 from sklearn.neighbors import kneighbors_graph
 from sklearn.metrics.pairwise import cosine_distances, euclidean_distances
 from scipy.stats import norm
-from scipy.cluster.hierarchy import linkage
+from scipy.cluster.hierarchy import linkage, fcluster
+import scipy.stats as stats
+from scipy.sparse.linalg import eigsh
 from sklearn.decomposition import TruncatedSVD
 
 from numba import cuda
@@ -251,114 +253,6 @@ def calculate_one_minus_rpac(cluster, n, x1, x2, device='gpu'):
     return res
     
 # ------------------------SCSHC FUNCTIONS-------------------------
-def isPD(B):
-    """Returns true when input is positive-definite, via Cholesky"""
-    try:
-        _ = np.linalg.cholesky(B)
-        return True
-    except np.linalg.LinAlgError:
-        return False
-
-# From https://github.com/alan-turing-institute/bocpdms/blob/master/nearestPD.py
-def nearestPD(A):
-    """Find the nearest positive-definite matrix to input
-
-    A Python/Numpy port of John D'Errico's `nearestSPD` MATLAB code [1], which
-    credits [2].
-
-    [1] https://www.mathworks.com/matlabcentral/fileexchange/42885-nearestspd
-    
-    [2] N.J. Higham, "Computing a nearest symmetric positive semidefinite
-    matrix" (1988): https://doi.org/10.1016/0024-3795(88)90223-6
-    """
-
-    B = (A + A.T) / 2
-    _, s, V = np.linalg.svd(B)
-
-    H = np.dot(V.T, np.dot(np.diag(s), V))
-
-    A2 = (B + H) / 2
-
-    A3 = (A2 + A2.T) / 2
-
-    if isPD(A3):
-        return A3
-
-    spacing = np.spacing(np.linalg.norm(A))
-    # The above is different from [1]. It appears that MATLAB's `chol` Cholesky
-    # decomposition will accept matrixes with exactly 0-eigenvalue, whereas
-    # Numpy's will not. So where [1] uses `eps(mineig)` (where `eps` is Matlab
-    # for `np.spacing`), we use the above definition. CAVEAT: our `spacing`
-    # will be much larger than [1]'s `eps(mineig)`, since `mineig` is usually on
-    # the order of 1e-16, and `eps(1e-16)` is on the order of 1e-34, whereas
-    # `spacing` will, for Gaussian random matrixes of small dimension, be on
-    # othe order of 1e-16. In practice, both ways converge, as the unit test
-    # below suggests.
-    I = np.eye(A.shape[0])
-    k = 1
-    while not isPD(A3):
-        mineig = np.min(np.real(np.linalg.eigvals(A3)))
-        A3 += I * (-mineig * k**2 + spacing)
-        k += 1
-
-    return A3
-
-class Dendrogram():
-    def __init__(self, linkage) -> None:
-        self.linkage = linkage
-        self.n_samples = linkage.shape[0] + 1
-        self.root = int(np.max(linkage[:, :2]) + 1)
-        self.cache = [None] * self.n_samples
-    
-    def get_subtree_leaves(self, root):
-        # TODO MEMORY OPTIMIZATION: Delete cache if called non-recursively
-        if root < self.n_samples:
-            return [(root, 0)]
-        
-        idx = root - self.n_samples
-        if self.cache[idx] is not None:
-            return self.cache[idx]
-        
-        leaves = list()
-        left, right = self.get_children(root)
-        leaves.extend([(x, 0) for (x, _) in self.get_subtree_leaves(left)])
-        leaves.extend([(x, 1) for (x, _) in self.get_subtree_leaves(right)])
-        self.cache[idx] = leaves.copy()
-
-        assert len(leaves) == self.linkage[idx][3] # Sanity check
-
-        return leaves
-    
-    def get_children(self, root):
-        if root < self.n_samples:
-            return []
-        idx = root - self.n_samples
-        return [int(x) for x in self.linkage[idx][:2]]
-    
-    def get_score(self, root):
-        if root < self.n_samples:
-            return 0
-        idx = root - self.n_samples
-        return self.linkage[idx][2] 
-
-def ward_linkage(X, labels,metric='cosine'):
-    # ess1 = calculate_ess(X[labels==0])
-    # ess2 = calculate_ess(X[labels==1])
-    # ess = calculate_ess(X)
-    # return (ess - (ess1 + ess2)) / X.shape[0]
-    n1 = np.sum(labels == 0)
-    n2 = np.sum(labels == 1)
-    mean1 = np.mean(X[labels==0], 0)
-    mean2 = np.mean(X[labels==1], 0)
-    if metric == 'cosine':
-        dist = cosine_distances(mean1.reshape(1, -1), mean2.reshape(1, -1)).item()
-    else:
-        dist = euclidean_distances(mean1.reshape(1, -1), mean2.reshape(1, -1)).item()
-    return np.sqrt(2 * n1 * n2 / (n1 + n2)) * dist
-
-# def calculate_ess(X):
-#     return np.sum(cosine_distances(X, np.mean(X, 0).reshape(1, -1)))
-
 def poisson_dispersion_stats(X):
     n = np.sum(X, 1)
     pis = np.sum(X, 0) / np.sum(X)
@@ -370,37 +264,145 @@ def poisson_dispersion_stats(X):
 
     return np.sqrt(y2.shape[0]) * (disp - 1) / np.sqrt(np.var(y2, 0))
 
+
+
+def test_split(X, ids1, ids2, nPC, alpha_level, n_jobs=None, old_preprocessing=False, device='gpu'):
+    if X.shape[0] < 2:
+        return 1
+    
+    new_X = X[ids1 + ids2,:]
+    nPC = min(nPC, X.shape[1])
+    if old_preprocessing:
+        metric='euclidean'
+        X_pre = scshc_preprocess(new_X)
+        X_transform = truncated_pca(X_pre,nPC)
+    else:
+        metric='cosine'
+        scl = scLENS(device=torch.device('cuda') if device == 'gpu' else torch.device('cpu'))
+        scl.preprocess(new_X)
+        X_transform = scl.fit_transform()
+        nPC = X_transform.shape[1]
+    
+    labels = np.array([0] * len(ids1) + [1] * len(ids2))
+
+    if metric== 'euclidean':
+        stat = ward_linkage(X_transform,labels)
+    elif metric == 'cosine':
+        stat = average_linkage_cosine(X_transform,labels)
+
+    phi_stat = poisson_dispersion_stats(new_X)
+    check_means = np.sum(new_X, axis=0)
+    p_values = norm.sf(phi_stat)
+    # p-value가 0.05 미만이고, check_means가 0이 아닌 인덱스 추출
+    on_genes = np.where((p_values < 0.05) & (check_means != 0))[0]
+
+    params = fit_model(new_X,on_genes,nPC)
+    
+    if old_preprocessing:
+        pool = list()
+        parallel = Parallel(n_jobs=n_jobs)
+        pool.extend(parallel(delayed(generate_null_stats)(new_X, params, on_genes, nPC=nPC, old_preprocessing=old_preprocessing) for _ in range(10)))
+        mean, std = norm.fit(np.array(pool))
+        pval = 1 - norm.cdf(stat, loc=mean, scale=std)
+
+        if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
+            return pval
+
+        pool.extend(parallel(delayed(generate_null_stats)(new_X, params, on_genes, nPC=nPC, old_preprocessing=old_preprocessing) for _ in range(40)))
+        mean, std = norm.fit(np.array(pool))
+    
+    else:
+        tmp_pool = generate_null_stats(new_X, params, on_genes, nPC=nPC, old_preprocessing=old_preprocessing,sclens_flag=True)
+        pool = [tmp_pool[0]]
+        nPC = tmp_pool[1]
+        parallel = Parallel(n_jobs=n_jobs)
+        pool.extend(parallel(delayed(generate_null_stats)(new_X, params, on_genes, nPC=nPC, old_preprocessing=old_preprocessing,sclens_flag=False) for _ in range(9)))
+        mean, std = norm.fit(np.array(pool))
+        
+        if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
+            return pval
+        
+        pool.extend(parallel(delayed(generate_null_stats)(new_X, params, on_genes, nPC=nPC, old_preprocessing=old_preprocessing,sclens_flag=False) for _ in range(40)))
+        mean, std = norm.fit(np.array(pool))
+        
+
+    return 1 - norm.cdf(stat, loc=mean, scale=std)
+
+    
+    
+def generate_null_stats(new_X,params,on_genes,old_preprocessing=False,nPC=30,sclens_flag=True,device="gpu"):
+    null_X = generate_null(new_X,params,on_genes)
+    
+    if old_preprocessing:
+        metric = 'euclidean'
+        null_pre = scshc_preprocess(null_X)
+        null_gm = truncated_pca(null_pre,nPC)
+    else:
+        metric = 'cosine'
+        if sclens_flag:
+            scl = scLENS(device=torch.device('cuda') if device == 'gpu' else torch.device('cpu'))
+            scl.preprocess(null_X)
+            null_gm = scl.fit_transform()
+            nPC = null_gm.shape[1]
+        else:
+            null_pre = preprocess(null_X)
+            null_gm = truncated_svd(null_pre,nPC)
+    
+    null_gm_d = scipy.spatial.distance.pdist(null_gm, metric)
+
+    if metric=='euclidean':
+        Z = linkage(null_gm_d, method='ward')
+        hc2 = fcluster(Z, 2, criterion='maxclust') # 클러스터 분할 (2개의 클러스터로 분할)
+        Qclust2 = ward_linkage(null_gm,hc2)
+    elif metric=='cosine':
+        Z = linkage(null_gm_d, method='weighted')
+        hc2 = fcluster(Z, 2, criterion='maxclust') # 클러스터 분할 (2개의 클러스터로 분할)
+        Qclust2 = average_linkage_cosine(null_gm,hc2)
+
+    if sclens_flag:
+        return Qclust2, nPC
+    else:
+        return Qclust2
+    
+
 def fit_model(X, on_genes, nPC):
     on_counts = X[:, on_genes] # c x g
     cov = np.cov(on_counts.T) # g x g
-    cov = np.atleast_2d(cov)
     means = np.mean(on_counts, 0) # g
     
     sigmas = np.log(((np.diag(cov) - means) / means**2) + 1) # g
     mus = np.log(means) - 0.5 * sigmas # g
-    mus_sum = mus.reshape(-1, 1) @ np.ones((1, mus.shape[0])) + np.ones((mus.shape[0], 1)) @ mus.reshape(1, -1) # g x g
-    sigmas_sum = sigmas.reshape(-1, 1) @ np.ones((1, sigmas.shape[0])) + np.ones((sigmas.shape[0], 1)) @ sigmas.reshape(1, -1) # g x g
+
+    # mus_sum = mus.reshape(-1, 1) @ np.ones((1, mus.shape[0])) + np.ones((mus.shape[0], 1)) @ mus.reshape(1, -1) # g x g
+    mus_sum = mus[:, None] + mus[None, :]
+    
+    # sigmas_sum = sigmas.reshape(-1, 1) @ np.ones((1, sigmas.shape[0])) + np.ones((sigmas.shape[0], 1)) @ sigmas.reshape(1, -1) # g x g
+    sigmas_sum = sigmas[:, None] + sigmas[None, :]
+
+    
     with np.errstate(divide='ignore', invalid='ignore'):
         rhos = np.log(cov / np.exp(mus_sum + 0.5 * sigmas_sum) + 1) # g x g
     rhos[np.isnan(rhos)] = -10
     rhos[np.isinf(rhos)] = -10
     np.fill_diagonal(rhos, sigmas)
 
-    vals, vecs = np.linalg.eigh(rhos)
-    nPC = min(nPC, vals.shape[0])
-    vals = vals[-nPC:]
-    vecs = vecs[:, -nPC:]
-    pos = vals > 0
+    vals, vecs = eigsh(rhos,k=min([nPC,rhos.shape[1]]),which='LM')
+    b_idx = vals > 0
+    # num_pos = sum(b_idx)
+    vals = vals[b_idx][::-1]
+    vecs = vecs[:,b_idx][:,::-1]
+    on_cov_sub = vecs*np.sqrt(vals)[np.newaxis,:]
 
-    on_cov_sub = vecs[:, pos] @ np.sqrt(np.diag(vals[pos]))
     on_cov = on_cov_sub @ on_cov_sub.T
     np.fill_diagonal(on_cov, np.diag(rhos))
-    on_cov_PD = nearestPD(on_cov)
+    on_cov_PD = posdefify(on_cov)
+    
     on_cov_sqrt = scipy.linalg.cholesky(on_cov_PD).T
 
     return np.mean(X, 0), mus, on_cov_sqrt 
 
-def generate_null_stats(X, params, on_genes, nPC, metric):
+
+def generate_null(X, params, on_genes):
     lambdas = params[0].astype(np.float64)
     on_means = params[1].astype(np.float64)
     on_cov_sqrt = params[2].astype(np.float64)
@@ -414,57 +416,106 @@ def generate_null_stats(X, params, on_genes, nPC, metric):
     rng = np.random.default_rng()
     null[:, np.logical_not(idx)] = rng.poisson(lambdas[np.logical_not(idx)], (num_gen, np.sum(np.logical_not(idx))))
 
-    y = on_cov_sqrt @ rng.normal(size=(num_gen, int(np.sum(idx)))).reshape(int(np.sum(idx)), num_gen) + on_means.reshape(-1, 1)
-    y = np.exp(y).T
-    null[:, idx] = rng.poisson(y)
+    num_on_genes = len(on_genes)
+    rand_normals = rng.normal(size=(num_gen, num_on_genes))
+    Y = rand_normals @ on_cov_sqrt.T
+    Y += on_means
+    Y = np.exp(Y)
+
+    null[:, idx] = rng.poisson(Y)
     
     null = null[np.sum(null, 1) > 0][:, np.sum(null, 0) > 0]
-    null_gm = truncated_sclens(null, nPC)
-    if metric == 'cosine':
-        dist = scipy.spatial.distance.pdist(null_gm, 'cosine')
-    elif metric == 'euclidean':
-        dist = scipy.spatial.distance.pdist(null_gm, 'euclidean')
-
-    hc = Dendrogram(linkage(dist, method='ward'))
-    # qual = hc.get_score(hc.root)
-    leaves = np.array(hc.get_subtree_leaves(hc.root))
-    leaf_idx = leaves[:, 0]
-    leaf_labels = leaves[:, 1]
-    qual = ward_linkage(null_gm[leaf_idx], leaf_labels, metric=metric)
-    return qual
-
-def test_significance(X, labels, nPC, score, alpha_level, n_jobs=None, metric='cosine'):
-    if X.shape[0] < 2:
-        return 1
+    return null
     
-    nPC = min(nPC, X.shape[1])
-    
-    X_transform = truncated_sclens(X, nPC)
 
-    score = ward_linkage(X_transform, labels, metric=metric)
+def posdefify(m, method='someEVadd', symmetric=True, eigen_m=None, eps_ev=1e-7):
 
-    phi_stat = poisson_dispersion_stats(X)
-    check_means = np.sum(X, 0)
-    on_genes = np.nonzero(((norm.sf(phi_stat)) < 0.05) & (check_means != 0.0))[0]
+    if not isinstance(m, np.ndarray) or m.ndim != 2:
+        raise ValueError("m은 2차원 numpy 배열이어야 합니다.")
 
-    params = fit_model(X, on_genes, nPC)
+    if eigen_m is None:
+        lam, Q = np.linalg.eigh(m)
+    else:
+        lam, Q = eigen_m
 
-    pool = list()
-    parallel = Parallel(n_jobs=n_jobs)
-    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC, metric) for _ in range(10)))
-    
-    mean, std = norm.fit(pool)
-    pval = norm.sf(score, loc=mean, scale=std)
-    if pval < 0.1 * alpha_level or pval > 10 * alpha_level:
-        print('Mean:', mean, 'Std:', std, 'Score:', score)
-        return pval
-    
-    pool.extend(parallel(delayed(generate_null_stats)(X, params, on_genes, nPC, metric) for _ in range(40)))
-    
-    mean, std = norm.fit(pool)
-    pval = norm.sf(score, loc=mean, scale=std)
-    print('Mean:', mean, 'Std:', std, 'Score:', score)
-    return pval
+    n = len(lam)
+    Eps = eps_ev * abs(lam[-1])  # 가장 큰 고유값에 대한 상대적인 작은 수
+
+    if lam[0] < Eps:
+        if method == 'someEVadd':
+            lam = np.maximum(lam, Eps)
+        elif method == 'allEVadd':
+            lam = lam + Eps - lam[0]
+        else:
+            raise ValueError("method는 'someEVadd' 또는 'allEVadd'이어야 합니다.")
+
+        o_diag = np.diag(m)  # 원래 행렬의 대각 원소
+
+        # 조정된 고유값으로 행렬 재구성
+        m = Q @ np.diag(lam) @ Q.T
+        D = np.sqrt(np.maximum(Eps, o_diag) / np.diag(m))
+        m = np.outer(D, D) * m
+    return m
+
+            
+def compute_ess(redduc):
+    """
+    Compute the ESS (sum of squared deviations from column means)
+    """
+    col_means = np.mean(redduc, axis=0)
+    deviations = redduc - col_means
+    return np.sum(np.sum(deviations ** 2, axis=1))
+
+def ward_linkage(redduc, labels):
+    """
+    Compute the Ward linkage test statistic
+    """
+    u_arr = np.unique(labels)
+    ess1 = compute_ess(redduc[labels == u_arr[0], :])
+    ess2 = compute_ess(redduc[labels == u_arr[1], :])
+    ess = compute_ess(redduc)
+    return (ess - (ess1 + ess2)) / len(labels)
+
+def cosine_distance(u, v):
+    norm_u = np.linalg.norm(u)
+    norm_v = np.linalg.norm(v)
+
+    if norm_u == 0 or norm_v == 0:
+        return 1.0  # 최대 코사인 거리
+
+    cosine_similarity = np.dot(u, v) / (norm_u * norm_v)
+    cosine_similarity = np.clip(cosine_similarity, -1.0, 1.0)
+    cosine_distance = 1 - cosine_similarity
+    return cosine_distance
+
+def average_linkage_cosine(data, labels):
+    # 고유한 레이블 확인 (두 개의 클러스터)
+    unique_labels = np.unique(labels)
+    if len(unique_labels) != 2:
+        raise ValueError("labels 배열은 반드시 두 개의 고유한 클러스터 레이블을 가져야 합니다.")
+
+    cluster1_data = data[labels == unique_labels[0]]
+    cluster2_data = data[labels == unique_labels[1]]
+
+    def normalize_data(data):
+        norms = np.linalg.norm(data, axis=1, keepdims=True)
+        zero_norms = norms == 0
+        norms[zero_norms] = 1  # 크기가 0인 경우 1로 설정하여 분모가 0이 되는 것 방지
+        normalized_data = data / norms
+        normalized_data[zero_norms.flatten()] = 0  # 원래 크기가 0인 벡터는 0으로 설정
+        return normalized_data
+
+    norm_cluster1 = normalize_data(cluster1_data)
+    norm_cluster2 = normalize_data(cluster2_data)
+
+    cosine_similarity_matrix = np.dot(norm_cluster1, norm_cluster2.T)
+    cosine_similarity_matrix = np.clip(cosine_similarity_matrix, -1.0, 1.0)
+    cosine_distance_matrix = 1 - cosine_similarity_matrix
+    average_distance = np.mean(cosine_distance_matrix)
+
+    return average_distance
+
+
 
 def preprocess(X):
     l1_norm = np.linalg.norm(X, ord=1, axis=1)
@@ -482,7 +533,7 @@ def preprocess(X):
     X = np.transpose(X.T - np.mean(X, axis=1))
     return X
 
-def truncated_sclens(X, nPC):
+def truncated_svd(X, nPC):
     # X = preprocess(X)
     svd = TruncatedSVD(n_components=nPC, n_iter=7)
     return svd.fit_transform(X)
@@ -497,3 +548,22 @@ def seurat_preprocessing(X):
     adata = adata[:,adata.var.highly_variable]
     scpy.pp.scale(adata)
     return adata.X
+
+def scshc_preprocess(X):
+    n = np.sum(X, 1)
+    pis = np.sum(X, 0) / np.sum(X)
+    mu = pis.reshape(-1, 1) @ n.reshape(1, -1)
+    mu = mu.T
+
+    b_idx = X == 0
+    d = np.empty_like(X)
+    d[b_idx] = -2 * (X[b_idx] - mu[b_idx])
+    d[~b_idx] = 2 * ((X[~b_idx] * np.log(X[~b_idx]/mu[~b_idx])) - (X[~b_idx] - mu[~b_idx]))
+    d[d<0] = 0
+
+    result = np.sqrt(d) * np.where(X > mu, 1, -1)
+    return result
+
+def truncated_pca(X,nPC=30):
+    Y = np.transpose(X.T - np.mean(X, axis=1))
+    return truncated_svd(Y,nPC=nPC)
