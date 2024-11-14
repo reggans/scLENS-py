@@ -374,7 +374,7 @@ class scLENS():
         elif method == 'chooseR':
             from .clustering import chooseR
 
-            self.resolution = chooseR(self.X_transform, **kwargs)
+            self.resolution = chooseR(self.X_transform, **kwargs)[0]
         elif method == 'multiK':
             from .clustering import multiK
             
