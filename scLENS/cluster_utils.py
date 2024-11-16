@@ -157,7 +157,7 @@ def calculate_score_gpu(clusters, n, reps, batch_size=3000):
     blocksPerGrid_y = math.ceil(batch_size / threadsPerBlock[1])
     blocksPerGrid = (blocksPerGrid_x, blocksPerGrid_y)
     
-    batch_num = math.ceil(clusters.shape[1] / batch_size)
+    batch_num = math.ceil(n / batch_size)
 
     for row in clusters:
         x_device = cuda.to_device(row)
