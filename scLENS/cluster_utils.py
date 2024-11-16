@@ -163,7 +163,7 @@ def calculate_score_gpu(clusters, n, reps, batch_size=3000):
         x_device = cuda.to_device(row)
         for i in range(batch_num):
             batch_start = i * batch_size
-            batch_end = min((i + 1) * batch_size, clusters.shape[1])
+            batch_end = min((i + 1) * batch_size, n)
             batch = row[batch_start:batch_end]
 
             y_device = cuda.to_device(batch)
