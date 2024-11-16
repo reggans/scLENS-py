@@ -212,7 +212,7 @@ def multiK(X,
                                                         X.shape[0],
                                                         x1,
                                                         x2,
-                                                        device="cpu")
+                                                        device=device)
                                                         for k in k_unique)
 
     points = np.array(list(zip(one_minus_rpac, k_runs)))

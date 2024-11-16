@@ -145,7 +145,7 @@ def calculate_score(clusters, n, reps, device='cpu'):
     else:
         raise Exception("Device not recognized. Please choose one of 'cpu' or 'gpu'")
 
-def calculate_score_gpu(clusters, n, reps):
+def calculate_score_gpu(clusters, n, reps, batch_size=3000):
     """
     Score calculation on GPU
     """
@@ -154,12 +154,23 @@ def calculate_score_gpu(clusters, n, reps):
 
     threadsPerBlock = (16, 16)
     blocksPerGrid_x = math.ceil(n / threadsPerBlock[0])
-    blocksPerGrid_y = math.ceil(n / threadsPerBlock[1])
+    blocksPerGrid_y = math.ceil(batch_size / threadsPerBlock[1])
     blocksPerGrid = (blocksPerGrid_x, blocksPerGrid_y)
     
+    batch_num = math.ceil(clusters.shape[1] / batch_size)
+
     for row in clusters:
         x_device = cuda.to_device(row)
-        outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_device, score_device)
+        for i in range(batch_num):
+            batch_start = i * batch_size
+            batch_end = min((i + 1) * batch_size, clusters.shape[1])
+            batch = row[batch_start:batch_end]
+
+            y_device = cuda.to_device(batch)
+            outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_device, y_device, score_device, batch_start)
+            del y_device
+            cuda.current_context().memory_manager.deallocations.clear()
+
         del x_device
         cuda.current_context().memory_manager.deallocations.clear()
     
@@ -171,17 +182,17 @@ def calculate_score_gpu(clusters, n, reps):
     return score
 
 @cuda.jit
-def outer_equality_kernel(x, out):
+def outer_equality_kernel(x, y, out, batch_start):
     """
     GPU kernel score calculation algorithm
     """
     tx, ty = cuda.grid(2)
 
-    if tx < x.shape[0] and ty < x.shape[0]:
-        if x[tx] == -1 or x[ty] == -1:
-            out[tx, ty] += 1j
-        elif x[tx] == x[ty]:
-            out[tx, ty] += 1
+    if tx < x.shape[0] and ty < y.shape[0]:
+        if x[tx] == -1 or y[ty] == -1:
+            out[tx, ty + batch_start] += 1j
+        elif x[tx] == y[ty]:
+            out[tx, ty + batch_start] += 1
 
 def calculate_score_cpu(clusters, n, reps, n_jobs=None):
     """
