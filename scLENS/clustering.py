@@ -201,6 +201,9 @@ def multiK(X,
         clusters[offset:offset+len(resolutions)] = full_cls
         ks[offset:offset+len(resolutions)] = [len(np.unique(cls)) - 1 for cls in full_cls] # accomodate for label of dropped data
     
+    del scl
+    torch.cuda.empty_cache()
+
     k_runs = [x[1] for x in sorted(Counter(ks).items())]
     k_unique = np.unique(ks)
     
@@ -209,7 +212,7 @@ def multiK(X,
                                                         X.shape[0],
                                                         x1,
                                                         x2,
-                                                        device=device)
+                                                        device="cpu")
                                                         for k in k_unique)
 
     points = np.array(list(zip(one_minus_rpac, k_runs)))
