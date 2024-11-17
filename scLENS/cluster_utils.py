@@ -160,19 +160,24 @@ def calculate_score_gpu(clusters, n, reps, batch_size=3000):
     batch_num = math.ceil(n / batch_size)
 
     for row in clusters:
-        x_device = cuda.to_device(row)
         for i in range(batch_num):
-            batch_start = i * batch_size
-            batch_end = min((i + 1) * batch_size, n)
-            batch = row[batch_start:batch_end]
+            x_batch_start = i * batch_size
+            x_batch_end = min((i + 1) * batch_size, n)
+            x_batch = row[x_batch_start:x_batch_end]
+            x_device = cuda.to_device(x_batch)
 
-            y_device = cuda.to_device(batch)
-            outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_device, y_device, score_device, batch_start)
-            del y_device
+            for j in range(batch_num):
+                y_batch_start = j * batch_size
+                y_batch_end = min((j + 1) * batch_size, n)
+                y_batch = row[y_batch_start:y_batch_end]
+                y_device = cuda.to_device(y_batch)
+                outer_equality_kernel[blocksPerGrid, threadsPerBlock](x_device, y_device, score_device, x_batch_start, y_batch_start)
+
+                del y_device
+                cuda.current_context().memory_manager.deallocations.clear()
+
+            del x_device
             cuda.current_context().memory_manager.deallocations.clear()
-
-        del x_device
-        cuda.current_context().memory_manager.deallocations.clear()
     
     score = score_device.copy_to_host()
     score = np.where(score.real > 0, percent_match(score, reps), 0)
@@ -182,7 +187,7 @@ def calculate_score_gpu(clusters, n, reps, batch_size=3000):
     return score
 
 @cuda.jit
-def outer_equality_kernel(x, y, out, batch_start):
+def outer_equality_kernel(x, y, out, x_start, y_start):
     """
     GPU kernel score calculation algorithm
     """
@@ -190,9 +195,9 @@ def outer_equality_kernel(x, y, out, batch_start):
 
     if tx < x.shape[0] and ty < y.shape[0]:
         if x[tx] == -1 or y[ty] == -1:
-            out[tx, ty + batch_start] += 1j
+            out[tx + x_start, ty + y_start] += 1j
         elif x[tx] == y[ty]:
-            out[tx, ty + batch_start] += 1
+            out[tx + x_start, ty + y_start] += 1
 
 def calculate_score_cpu(clusters, n, reps, n_jobs=None):
     """
